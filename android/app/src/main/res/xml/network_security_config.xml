@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The ESP32-CAM serves its MJPEG stream over plain HTTP on the local network.
+  Android has blocked cleartext by default since API 28, so without this the
+  stream fails with an error that does not mention cleartext at all.
+
+  Why cleartext is permitted app-wide rather than for the camera's IP only:
+  this config matches hostnames, not subnets — <domain>192.168.1.0</domain>
+  matches that one literal address and nothing else. Pinning the camera's
+  current IP here would break the stream the moment the router hands it a
+  different one, with no clue as to why.
+
+  Permitting cleartext does not weaken the Firebase connection: that URL is
+  an explicit https:// endpoint and stays on TLS. The setting allows plain
+  HTTP where a plain-HTTP URL is used, which in this app is the camera alone.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system"/>
+        </trust-anchors>
+    </base-config>
+</network-security-config>

@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BeeGuard | Smart beehive monitoring and protection</title>
+<meta name="description" content="BeeGuard is a solar-powered smart beehive that monitors the colony, detects hornets, controls access, automates feeding and honey collection, and reports to a mobile app.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐝</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@500;700;800&family=Source+Sans+3:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#edf0e4;--ink:#16301f;--muted:#4d6252;--honey:#f0a91b;--comb:#6b4a12;--line:#cfd6c0}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink);font:400 18px/1.6 "Source Sans 3",system-ui,sans-serif}
+a{color:inherit}
+:focus-visible{outline:3px solid var(--honey);outline-offset:3px}
+.wrap{max-width:1040px;margin:0 auto;padding:0 24px}
+header{display:flex;justify-content:space-between;align-items:center;padding:22px 0}
+.logo{font:800 22px "Bricolage Grotesque",sans-serif;text-decoration:none}
+nav a{margin-left:22px;text-decoration:none;font-weight:600}
+nav a:hover{text-decoration:underline}
+.hero{display:grid;grid-template-columns:1.1fr .9fr;gap:40px;align-items:center;padding:56px 0 72px}
+h1{font:800 clamp(36px,5.5vw,60px)/1.06 "Bricolage Grotesque",sans-serif;margin:0 0 20px;letter-spacing:-.02em}
+.lead{font-size:20px;color:var(--muted);max-width:32em;margin:0 0 28px}
+.btn{display:inline-block;background:var(--ink);color:#fff;padding:14px 26px;border-radius:999px;font-weight:600;text-decoration:none}
+.btn:hover{background:var(--comb)}
+.btn.alt{background:transparent;color:var(--ink);border:2px solid var(--ink);margin-left:10px}
+.btn.alt:hover{background:var(--ink);color:#fff}
+.comb{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;max-width:380px;margin-left:auto}
+.cell{aspect-ratio:1/1.1547;clip-path:polygon(50% 0,100% 25%,100% 75%,50% 100%,0 75%,0 25%);background:var(--line)}
+.comb .cell:nth-child(even){transform:translateY(50%)}
+.cell.on{background:var(--honey)}
+.cell.warn{background:var(--comb)}
+section{padding:56px 0;border-top:1px solid var(--line)}
+h2{font:700 clamp(28px,4vw,38px)/1.15 "Bricolage Grotesque",sans-serif;margin:0 0 12px}
+.sub{color:var(--muted);max-width:42em;margin:0 0 32px}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:32px 28px}
+.grid.two{grid-template-columns:repeat(2,1fr)}
+h3{font:700 21px "Bricolage Grotesque",sans-serif;margin:0 0 8px}
+.grid p,.about p{margin:0;color:var(--muted)}
+.about{max-width:44em}
+.about p+p{margin-top:14px}
+.stats{display:flex;flex-wrap:wrap;gap:36px;margin-top:8px}
+.stats b{display:block;font:800 34px "Bricolage Grotesque",sans-serif}
+.stats span{color:var(--muted);font-size:16px}
+ul.next{margin:0;padding-left:20px;color:var(--muted)}
+.contact{background:var(--ink);color:#fff;border-radius:24px;padding:40px;margin-bottom:56px}
+.contact a{color:var(--honey);font-weight:600}
+footer{padding:0 0 40px;color:var(--muted);font-size:15px}
+@media(max-width:760px){.hero{grid-template-columns:1fr;padding-top:24px}.comb{margin:0 auto 24px}.grid,.grid.two{grid-template-columns:1fr}nav a{margin-left:14px}.btn.alt{margin:12px 0 0}}
+.shots{display:grid;grid-template-columns:repeat(6,1fr);gap:16px;margin:0;padding:0;list-style:none}
+.shots figure{margin:0}
+.shots img{width:100%;height:auto;display:block;border-radius:14px;border:1px solid var(--line)}
+.shots figcaption{font-size:15px;color:var(--muted);margin-top:8px}
+@media(max-width:900px){.shots{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:520px){.shots{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <a class="logo" href="#">BeeGuard</a>
+    <nav><a href="#features">Features</a><a href="#how">How it works</a><a href="#app">App</a><a href="#team">Team</a><a href="#contact">Contact</a></nav>
+  </header>
+
+  <main>
+    <div class="hero">
+      <div>
+        <h1>A smart beehive that watches over the colony.</h1>
+        <p class="lead">BeeGuard monitors the hive, detects hornets, controls access, and automates feeding and honey collection, powered by the sun and managed from a mobile app.</p>
+        <a class="btn" href="#features">See what it does</a><a class="btn alt" href="https://github.com/LamaDamere/beeguard">View code</a>
+      </div>
+      <div class="comb" aria-hidden="true">
+        <div class="cell on"></div><div class="cell"></div><div class="cell on"></div><div class="cell on"></div><div class="cell"></div>
+        <div class="cell"></div><div class="cell on"></div><div class="cell warn"></div><div class="cell on"></div><div class="cell on"></div>
+        <div class="cell on"></div><div class="cell on"></div><div class="cell"></div><div class="cell on"></div><div class="cell"></div>
+        <div class="cell"></div><div class="cell on"></div><div class="cell on"></div><div class="cell warn"></div><div class="cell on"></div>
+      </div>
+    </div>
+
+    <section id="problem">
+      <h2>Checking a hive means opening it</h2>
+      <div class="about">
+        <p>Beekeepers have to open a hive to see whether the queen is present, whether feed is running low, or whether predators are attacking. Each opening stresses the colony, and problems like queen loss or wasp attacks can develop between visits, especially at hives in remote areas.</p>
+        <p>BeeGuard watches the hive continuously and reacts at the hive itself, so the beekeeper can step in earlier and open the hive less often.</p>
+      </div>
+    </section>
+
+    <section id="features">
+      <h2>What BeeGuard does</h2>
+      <p class="sub">Monitoring, protection, and care automation in one hive-mounted system.</p>
+      <div class="grid">
+        <div><h3>Monitors the colony</h3><p>Tracks temperature, humidity, hive weight, feed level, and hive sound, with a live view in the app.</p></div>
+        <div><h3>Listens for queen loss</h3><p>A TinyML model runs on the hive's own ESP32 board and screens hive audio for queen loss, with no internet needed for the analysis.</p></div>
+        <div><h3>Stops hornets</h3><p>A camera at the entrance spots hornet-like insects. The entrance narrows so bees pass but larger insects can't, then reopens automatically.</p></div>
+        <div><h3>Controls access</h3><p>An RFID lock opens with a card or key fob. Every scan is logged with the card ID and time and shown in the app.</p></div>
+        <div><h3>Feeds on demand</h3><p>Send a 50 ml or 100 ml dose from your phone. The pump runs a calibrated time and the app shows the tank level.</p></div>
+        <div><h3>Assists the harvest</h3><p>One command opens the honey door and releases a short burst of smoke to calm the bees. The door stays open until you close it.</p></div>
+      </div>
+    </section>
+
+    <section id="how">
+      <h2>How it works</h2>
+      <p class="sub">Three ESP32 boards share the work and talk to each other over ESP-NOW. Only the main controller connects to the internet.</p>
+      <div class="grid">
+        <div><h3>Monitor board</h3><p>Microphone, temperature and humidity sensor, and the on-device sound classifier.</p></div>
+        <div><h3>Camera board</h3><p>Hornet detection at the entrance and a live video stream to the app.</p></div>
+        <div><h3>Main controller</h3><p>Lock, feeding, honey door, entrance, and weight. It syncs with Firebase and runs actuators locally even if the connection drops.</p></div>
+      </div>
+      <p class="sub" style="margin-top:28px">The hive runs on rechargeable lithium batteries charged by a solar panel, so it can work where there is no mains power. The mobile app is built with Flutter and shows alerts, live readings, access history, and controls.</p>
+    </section>
+
+    <section id="app">
+      <h2>The beekeeper's app</h2>
+      <p class="sub">Screens from the BeeGuard mobile app, running against live data from the prototype hive.</p>
+      <div class="shots">
+        <figure><img src="images/app-dashboard.jpg" alt="Dashboard with recent alerts and quick actions" loading="lazy" width="297" height="659"><figcaption>Dashboard</figcaption></figure>
+        <figure><img src="images/app-monitoring.jpg" alt="Live monitoring of temperature, humidity, lock and feed level" loading="lazy" width="287" height="639"><figcaption>Live monitoring</figcaption></figure>
+        <figure><img src="images/app-feeding.jpg" alt="Feeding screen with tank level and 50 ml and 100 ml doses" loading="lazy" width="249" height="554"><figcaption>Feeding</figcaption></figure>
+        <figure><img src="images/app-security.jpg" alt="Security screen with RFID access history" loading="lazy" width="289" height="641"><figcaption>RFID access history</figcaption></figure>
+        <figure><img src="images/app-hornet.jpg" alt="Hornet detection screen with entrance camera and entrance control" loading="lazy" width="286" height="637"><figcaption>Hornet detection</figcaption></figure>
+        <figure><img src="images/app-alerts.jpg" alt="Alerts feed with filters" loading="lazy" width="298" height="663"><figcaption>Alerts</figcaption></figure>
+      </div>
+    </section>
+
+    <section id="status">
+      <h2>Where we are</h2>
+      <p class="sub">A working prototype, field-tested end to end on a real hive.</p>
+      <div class="stats">
+        <div><b>3</b><span>ESP32 boards working together</span></div>
+        <div><b>29 ms</b><span>per sound inference on the ESP32</span></div>
+        <div><b>79.65%</b><span>queen-loss model accuracy on unseen test data</span></div>
+      </div>
+      <h3 style="margin-top:36px">Next steps</h3>
+      <ul class="next">
+        <li>Record sound from local hives to improve queen-loss detection.</li>
+        <li>Add swarming detection, push notifications, and battery reporting.</li>
+        <li>Restrict RFID access to registered cards and add user sign-in to the app.</li>
+        <li>Support many hives in one dashboard.</li>
+      </ul>
+    </section>
+
+    <section id="team">
+      <h2>Team</h2>
+      <div class="grid two">
+        <div><h3>Lama Damere</h3><p>Computer Engineering, An-Najah National University</p></div>
+        <div><h3>Yamama Sawalmeh</h3><p>Computer Engineering, An-Najah National University</p></div>
+      </div>
+      <p class="sub" style="margin-top:24px">BeeGuard began as a hardware graduation project at An-Najah National University in Nablus, Palestine (academic year 2025/2026). We built it for the beekeepers of Palestine and beyond.</p>
+    </section>
+
+    <section id="contact" style="border:0;padding-top:0">
+      <div class="contact">
+        <h2>Contact</h2>
+        <p>Questions, partnerships, or feedback? Email us at <a href="mailto:yamama.sawalma123@gmail.com">yamama.sawalma123@gmail.com</a>.</p>
+        <p>Code: <a href="https://github.com/LamaDamere/beeguard">github.com/LamaDamere/beeguard</a></p>
+      </div>
+    </section>
+  </main>
+
+  <footer>&copy; 2026 BeeGuard. Nablus, Palestine.</footer>
+</div>
+</body>
+</html>

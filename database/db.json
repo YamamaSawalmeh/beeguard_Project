@@ -1,0 +1,105 @@
+{
+  "_comment": "BeeGuard Realtime Database skeleton. Import into the Firebase console to create the node structure. Sensor fields start empty on purpose: seeding plausible readings makes a disconnected hive look like a healthy one. The ESP32 main controller fills them in and owns everything except the app-written keys under /commands.",
+
+  "hive_status": {
+    "temperature": 0,
+    "humidity": 0,
+    "weight": 0,
+    "water_level": 0,
+    "water_height_cm": 0,
+    "water_remaining_ml": 0,
+    "water_sensor_ok": true,
+    "sound_result": "Unknown",
+    "sound_confidence": 0,
+    "health_score": 0,
+    "door_open": false,
+    "locked": true,
+    "entrance_status": "open",
+    "audio_node_online": false,
+    "camera_node_online": false,
+    "last_sync": "Waiting for hive",
+    "last_sync_epoch": 0
+  },
+
+  "ai_status": {
+    "sound_result": "Unknown",
+    "confidence": 0,
+    "last_analysis": "No analysis yet",
+    "model_version": "Edge Impulse v1.0",
+    "node_online": false
+  },
+
+  "ai_history": {},
+
+  "commands": {
+    "collect_honey": false,
+    "smoke_pump": false,
+    "pump": false,
+    "feed_ml": 0,
+    "entrance": "open",
+    "tare_scale": false,
+    "set_baseline": false
+  },
+
+  "security": {
+    "locked": true,
+    "rfid_status": "Waiting for Card",
+    "last_card": "",
+    "last_time": ""
+  },
+
+  "hornet_detection": {
+    "detected": false,
+    "entrance_status": "open",
+    "last_detection": "No detection yet",
+    "last_detection_epoch": 0,
+    "last_confirmed": false,
+    "detection_count": 0,
+    "camera_online": false,
+    "image_url": ""
+  },
+
+  "camera": {
+    "stream_url": "http://192.168.137.150/",
+    "status_url": "http://192.168.137.150:81/status",
+    "online": false,
+    "last_seen": ""
+  },
+
+  "production": {
+    "hive_weight": 0,
+    "baseline_weight": 4.0,
+    "estimated_honey": 0,
+    "today_production": 0,
+    "today_start_weight": 0,
+    "today_date": "",
+    "yesterday_production": 0,
+    "weekly_production": 0,
+    "monthly_production": 0,
+    "total_harvested": 0,
+    "last_harvest_kg": 0,
+    "last_harvest_time": "",
+    "history": {}
+  },
+
+  "calibration": {
+    "scale_factor": -7050.0,
+    "tare_offset": 0,
+    "container_height_cm": 3.5,
+    "sensor_to_top_cm": 4.0,
+    "container_diameter_cm": 9.0,
+    "honey_fraction": 0.85
+  },
+
+  "settings": {
+    "temp_max": 36,
+    "temp_min": 32,
+    "humidity_max": 75,
+    "humidity_min": 40,
+    "notifications_enabled": true
+  },
+
+  "alerts": {},
+
+  "rfid_logs": {}
+}
