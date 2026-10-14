@@ -1,51 +1,3 @@
-/*
- * BeeGuard — ESP32 #1 (Main Controller) — v5.0
- *
- * WHAT CHANGED vs v4.0
- *  1. ENTRANCE ANGLES FLIPPED. What the firmware drove as "open" was physically
- *     the narrow position. ENTRANCE_OPEN_ANGLE / ENTRANCE_NARROW_ANGLE are now
- *     swapped so the app's labels match the gate.
- *  2. REAL CLOCK. uptimeStamp() ("1234s") is gone. NTP gives wall-clock
- *     timestamps + epoch on alerts, RFID logs, detections and daily rollover.
- *  3. ULTRASONIC FIXED. A pulseIn() timeout used to compute as a FULL tank —
- *     a dead sensor reported 100%. Now: median of 5 pings, timeout => NAN =>
- *     the last good value is held and a sensor fault is raised. Speed of sound
- *     is temperature-compensated from the hive DHT reading.
- *  4. SCALE FIXED. Calibration + tare persist in /calibration so weight no
- *     longer resets to zero on every reboot. A failed read holds the last good
- *     value instead of publishing 0.0 (which used to look like a lost hive).
- *  5. EVENT SYSTEM. Every actuator and sensor transition raises an /alerts
- *     entry with severity + real timestamp. Level alerts are throttled — the
- *     old code appended a new node every 30 s forever while a level was low.
- *  6. HONEY ESTIMATION. Weight gain is tracked against a persisted baseline,
- *     rolled into /production/history daily, and harvests are detected from
- *     the weight drop after a collection.
- *  7. NON-BLOCKING PUMPS. Smoke (4 s) and feeding (up to 12 s) no longer
- *     delay() the main loop, so RFID and alerts stay responsive — and a pump
- *     can actually be stopped while it is running.
- *  8. TYPED ESP-NOW. Packets carry a msgType byte instead of being told apart
- *     by sizeof(), and sound labels are normalised to the app's vocabulary.
- *
- * ─── GPIO MAPPING ─────────────────────────────────────────
- * Main Door Servo (Honey Collection)  → GPIO 18
- * Lock Servo                          → GPIO 19
- * Entrance Servo                      → GPIO 13
- * Feeding Pump Relay                  → GPIO 33  (ACTIVE LOW)
- * Smoke Pump Relay                    → GPIO 32  (ACTIVE LOW)
- * Ultrasonic TRIG                     → GPIO 26
- * Ultrasonic ECHO                     → GPIO 16
- * HX711 DT                            → GPIO 17
- * HX711 SCK                           → GPIO 15
- * RFID SDA (SS)                       → GPIO 5
- * RFID SCK                            → GPIO 14
- * RFID MOSI                           → GPIO 25
- * RFID MISO                           → GPIO 27
- * RFID RST                            → GPIO 4
- *
- * Libraries: Firebase ESP32 Client (Mobizt), ESP32Servo, HX711 (Bogdan
- * Necula), MFRC522 (GithubCommunity).
- */
-
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
@@ -56,137 +8,92 @@
 #include <SPI.h>
 #include <MFRC522.h>
 
-// ═══════════════════════════════════════════════════════════
-// WIFI — MUST BE IDENTICAL ON ALL THREE BOARDS
-// ═══════════════════════════════════════════════════════════
-// ESP-NOW only reaches peers that sit on the same radio channel, and a board's
-// channel is whichever channel its access point uses. If this controller joins
-// one network and the camera joins another, esp_now_send() still returns
-// ESP_OK but the packet is never received. Keep these three lines the same in
-// BeeGuard_Main_Controller.ino, esp32cam_hive_guard.ino and BEE_HIVE_MONITOR.ino.
 #define WIFI_SSID     "MSI"
 #define WIFI_PASSWORD "123456789"
 
-// ─── Firebase ─────────────────────────────────────────────
 #define API_KEY      "AIzaSyCqzB6EBkAenCuURUXDoji7N67xjDTb8SI"
 #define DATABASE_URL "https://beeguard-smartbee-default-rtdb.europe-west1.firebasedatabase.app"
 
-// ─── Camera node (for the app's live view) ────────────────
 #define CAMERA_STREAM_URL   "http://192.168.137.150/"
 #define CAMERA_STATUS_URL   "http://192.168.137.150:81/status"
 
-// ─── Time ─────────────────────────────────────────────────
 #define NTP_SERVER_1    "pool.ntp.org"
 #define NTP_SERVER_2    "time.google.com"
-#define GMT_OFFSET_SEC  (3 * 3600)   // Jordan = UTC+3
+#define GMT_OFFSET_SEC  (3 * 3600)
 #define DST_OFFSET_SEC  0
 
-// ─── GPIO Pins ────────────────────────────────────────────
-#define SERVO_DOOR_PIN      18   // Honey collection door
-#define SERVO_LOCK_PIN      19   // Hive lock
-#define SERVO_ENTRANCE_PIN  13   // Entrance narrowing
+#define SERVO_DOOR_PIN      18
+#define SERVO_LOCK_PIN      19
+#define SERVO_ENTRANCE_PIN  13
 
-#define RELAY_FEED_PIN      33   // Feeding pump  (ACTIVE LOW)
-#define RELAY_SMOKE_PIN     32   // Smoke pump    (ACTIVE LOW)
+#define RELAY_FEED_PIN      33
+#define RELAY_SMOKE_PIN     32
 
-#define TRIG_PIN            26   // Ultrasonic
+#define TRIG_PIN            26
 #define ECHO_PIN            16
 
-#define HX711_DT            17   // Load cell
+#define HX711_DT            17
 #define HX711_SCK           15
 
 #define RFID_SS_PIN         5
 #define RFID_RST_PIN        4
 
-// ─── Servo angles ─────────────────────────────────────────
-// FLIPPED in v5.0: the gate is mounted so that 180° is the wide/open position
-// and 0° is the narrowed one. Before this swap "Open Entrance" in the app
-// physically narrowed the gate and vice-versa. If the servo is ever remounted,
-// swap these two numbers again — nothing else needs to change.
 #define DOOR_CLOSED_ANGLE     0
 #define DOOR_OPEN_ANGLE       180
-#define LOCK_LOCKED_ANGLE     90     // boot / secured position
+#define LOCK_LOCKED_ANGLE     90
 #define LOCK_UNLOCKED_ANGLE   180
 #define ENTRANCE_OPEN_ANGLE   180
 #define ENTRANCE_NARROW_ANGLE 0
 
-// ─── Timing ───────────────────────────────────────────────
-#define SMOKE_DURATION_MS   4000UL  // smoke pump burst during honey collection
-#define FEED_MS_PER_ML      120UL   // 0.12 s/ml -> 50ml=6s, 100ml=12s
-#define FEED_MAX_MS         30000UL // hard safety ceiling on one pump run
+#define SMOKE_DURATION_MS   4000UL
+#define FEED_MS_PER_ML      120UL
+#define FEED_MAX_MS         30000UL
 
-const unsigned long UPLOAD_INTERVAL   = 30000;  // sensor push cadence
-const unsigned long COMMAND_INTERVAL  = 700;    // command poll cadence
-const unsigned long NODE_TIMEOUT_MS   = 150000; // peer considered offline after
-const unsigned long ALERT_COOLDOWN_MS = 900000; // 15 min between repeat level alerts
+const unsigned long UPLOAD_INTERVAL   = 30000;
+const unsigned long COMMAND_INTERVAL  = 700;
+const unsigned long NODE_TIMEOUT_MS   = 150000;
+const unsigned long ALERT_COOLDOWN_MS = 900000;
 
-// How long the entrance stays narrowed after the last hornet leaves before it
-// reopens on its own. Previously it never reopened: one sighting left the hive
-// constricted until somebody opened the app, which costs the colony ventilation
-// and foraging traffic for as long as nobody notices. The delay stops it
-// flapping when a hornet drifts in and out of frame.
-// Set to 0 to disable auto-reopen and require a manual tap instead.
 const unsigned long HORNET_REOPEN_DELAY_MS = 10UL * 60UL * 1000UL;
 
-// ─── Feeding container geometry ───────────────────────────
-// Defaults; overridden at boot by /calibration if present so the tank can be
-// re-measured from the app without reflashing.
-float sensorToTopCm    = 4.0;   // ultrasonic face down to the container rim
-float containerHeightCm = 3.5;  // rim to inside floor
-float containerDiameterCm = 9.0;// for the remaining-volume estimate
+float sensorToTopCm    = 4.0;
+float containerHeightCm = 3.5;
+float containerDiameterCm = 9.0;
 
-// ─── Scale calibration ────────────────────────────────────
-// SCALE_FACTOR converts raw HX711 counts to kilograms; it is load-cell
-// specific and MUST be measured (see /calibration/scale_factor). tareOffset is
-// the raw reading of the empty hive and is persisted so weight survives a
-// reboot instead of re-zeroing with the hive already on the cell.
 float scaleFactor = -7050.0;
 long  tareOffset  = 0;
 
-// ─── Honey model ──────────────────────────────────────────
-// Not all of a hive's weight gain is harvestable honey — some becomes wax,
-// brood and bee mass. honeyFraction scales net gain into an *estimate*; raise
-// or lower it in /calibration/honey_fraction once real harvests are weighed.
 float honeyFraction   = 0.85;
-float harvestDropKg   = 0.50;   // weight drop that counts as a harvest
-float baselineWeight  = 4.0;    // approx empty-box weight so the honey estimate is never blank; re-measure via Set Baseline
+float harvestDropKg   = 0.50;
+float baselineWeight  = 4.0;
 
-// ═══════════════════════════════════════════════════════════
-// ESP-NOW WIRE FORMAT — keep byte-identical on every board
-// ═══════════════════════════════════════════════════════════
 #define MSG_SENSOR 1
 #define MSG_CAM    2
 
 typedef struct __attribute__((packed)) {
-  uint8_t msgType;         // MSG_SENSOR
+  uint8_t msgType;
   float   temperature;
   float   humidity;
   char    soundResult[20];
-  uint8_t confidence;      // 0..100
-  uint8_t freshAnalysis;   // 1 = new classification, 0 = environment-only tick
+  uint8_t confidence;
+  uint8_t freshAnalysis;
 } SensorData;
 
 typedef struct __attribute__((packed)) {
-  uint8_t  msgType;            // MSG_CAM
-  uint8_t  hornetDetected;     // 1 = hornet in the current frame
-  uint8_t  count;              // boxes in the current frame
-  uint32_t secondsSinceLast;   // since last confirmed detection, 0xFFFFFFFF = never
+  uint8_t  msgType;
+  uint8_t  hornetDetected;
+  uint8_t  count;
+  uint32_t secondsSinceLast;
 } CamData;
 
-// ─── Feeding level reading ────────────────────────────────
-// Declared up here, not next to readFeedingLevel(): the Arduino builder injects
-// prototypes for every function immediately before the FIRST function in the
-// file, so a return type defined later in the file is not yet visible and the
-// build fails on a line that does not appear in the source.
 struct FeedingData {
-  float distance;      // NAN on sensor fault
-  float waterHeight;   // cm of solution left
-  float percentage;    // 0..100
+  float distance;
+  float waterHeight;
+  float percentage;
   float remainingMl;
   bool  valid;
 };
 
-// ─── Objects ──────────────────────────────────────────────
 FirebaseData   fbdo;
 FirebaseAuth   auth;
 FirebaseConfig config;
@@ -196,31 +103,23 @@ Servo          servoEntrance;
 HX711          scale;
 MFRC522        rfid(RFID_SS_PIN, RFID_RST_PIN);
 
-// ─── Scheduling ───────────────────────────────────────────
 unsigned long lastSensorUpload = 0;
 unsigned long lastCommandPoll  = 0;
 
-// ─── Actuator state ───────────────────────────────────────
-bool   doorOpen         = false;  // honey door
-bool   lockState        = true;   // true = LOCKED (secure boot default)
+bool   doorOpen         = false;
+bool   lockState        = true;
 String entranceState    = "open";
 bool   lastCollectHoney = false;
 
-// Non-blocking pump timers. 0 = idle; otherwise the millis() deadline.
 unsigned long smokeOffAt = 0;
 unsigned long feedOffAt  = 0;
 int           feedingMl  = 0;
 
-// millis() + duration can land on exactly 0 once per 49.7-day wrap, and 0 is
-// our "idle" sentinel — the deadline would then never be seen and the relay
-// would stay latched on. Nudging to 1 costs one millisecond and removes the
-// case entirely.
 static inline unsigned long deadlineAt(unsigned long durationMs) {
   unsigned long d = millis() + durationMs;
   return (d == 0) ? 1UL : d;
 }
 
-// ─── Sensor state ─────────────────────────────────────────
 float receivedTemp       = NAN;
 float receivedHumidity   = NAN;
 String receivedSound     = "Unknown";
@@ -229,17 +128,9 @@ bool  hornetDetected     = false;
 int   hornetCount        = 0;
 bool  lastHornetState    = false;
 
-// Auto-reopen bookkeeping. entranceNarrowedByHornet distinguishes "the system
-// narrowed this" from "the beekeeper narrowed this" — only the former is
-// reopened automatically. hornetClearedAt is 0 when no timer is running.
 bool          entranceNarrowedByHornet = false;
 unsigned long hornetClearedAt          = 0;
 
-// Seconds since the camera's last confirmed detection, as the camera reports
-// it. 0xFFFFFFFF = it has never seen one. The camera has no clock, so it sends
-// an age and we convert it here where NTP is available — which also means a
-// reboot of this controller recovers the real detection time from the camera
-// instead of losing it.
 #define CAM_NEVER_DETECTED 0xFFFFFFFFUL
 uint32_t camSecondsSinceDetection = CAM_NEVER_DETECTED;
 
@@ -252,18 +143,11 @@ unsigned long lastCamPacket   = 0;
 bool audioOnline = false;
 bool camOnline   = false;
 
-// ─── Hand-off from the ESP-NOW callback to loop() ─────────
-// The receive callback runs in the Wi-Fi task, which has a ~3.5 KB stack and
-// must not block. Doing Firebase writes there overflows that stack, and
-// touching a String there races the loop task's reads of the same String
-// (heap free while it is being read). So the callback only copies scalars and
-// raises this flag; every String and Firebase operation happens in loop().
 volatile bool    pendingSoundUpdate = false;
 volatile bool    pendingSoundFresh  = false;
 volatile uint8_t pendingSoundConf   = 0;
 char             pendingSoundLabel[21] = "Unknown";
 
-// ─── Production tracking ──────────────────────────────────
 String todayDate         = "";
 float  todayStartWeight  = NAN;
 float  weeklyProduction  = 0.0;
@@ -274,10 +158,6 @@ float  totalHarvested    = 0.0;
 float  prevWeightSample  = NAN;
 
 bool timeSynced = false;
-
-// ═══════════════════════════════════════════════════════════
-// TIME HELPERS
-// ═══════════════════════════════════════════════════════════
 
 bool syncTime() {
   configTime(GMT_OFFSET_SEC, DST_OFFSET_SEC, NTP_SERVER_1, NTP_SERVER_2);
@@ -298,8 +178,6 @@ time_t nowEpoch() {
   return n;
 }
 
-// "2026-08-20 14:33:10" — falls back to uptime so a failed NTP sync still
-// produces something ordered rather than an empty string.
 String nowStamp() {
   struct tm t;
   if (!getLocalTime(&t, 100)) {
@@ -310,7 +188,7 @@ String nowStamp() {
   return String(buf);
 }
 
-String nowClock() {  // "14:33"
+String nowClock() {
   struct tm t;
   if (!getLocalTime(&t, 100)) return "--:--";
   char buf[8];
@@ -318,8 +196,6 @@ String nowClock() {  // "14:33"
   return String(buf);
 }
 
-// Format an arbitrary epoch (not just "now") — used to turn the camera's
-// "seconds since last detection" into a wall-clock time.
 String stampFromEpoch(time_t e) {
   struct tm t;
   if (!timeSynced || e <= 0) return "Unknown";
@@ -329,7 +205,7 @@ String stampFromEpoch(time_t e) {
   return String(buf);
 }
 
-String todayKey() {  // "2026-08-20"
+String todayKey() {
   struct tm t;
   if (!getLocalTime(&t, 100)) return "1970-01-01";
   char buf[12];
@@ -351,20 +227,10 @@ int monthNumber() {
   return t.tm_mon + 1;
 }
 
-// ═══════════════════════════════════════════════════════════
-// ALERTS / EVENT FEED
-// ═══════════════════════════════════════════════════════════
-// Two entry points:
-//   pushEvent()     — edge-triggered. Something just happened; always record it.
-//   pushLevelAlert()— level-triggered. A reading is out of range and will stay
-//                     that way; record it at most once per cooldown so the
-//                     feed doesn't grow by one node every 30 s.
-
 uint16_t alertSeq = 0;
 
 String alertKey() {
-  // Zero-padded epoch keeps Firebase's lexicographic key order equal to time
-  // order, so the app can read the newest alerts without a sort.
+
   char buf[32];
   snprintf(buf, sizeof(buf), "evt_%010lu_%03u",
            (unsigned long)nowEpoch(), (unsigned)(alertSeq++ % 1000));
@@ -383,7 +249,7 @@ bool allowAlert(const String &key, unsigned long cooldownMs) {
   unsigned long now = millis();
   for (int i = 0; i < MAX_THROTTLES; i++) {
     if (throttles[i].used && throttles[i].key == key) {
-      // Unsigned subtraction stays correct across the 49-day millis() rollover.
+
       if (now - throttles[i].lastMs < cooldownMs) return false;
       throttles[i].lastMs = now;
       return true;
@@ -397,12 +263,9 @@ bool allowAlert(const String &key, unsigned long cooldownMs) {
       return true;
     }
   }
-  return true; // table full: don't suppress
+  return true;
 }
 
-// Clear a throttle so the next occurrence reports immediately. Called when a
-// reading returns to normal, so "low water" alerts again on the next dip
-// instead of waiting out the cooldown.
 void resetAlert(const String &key) {
   for (int i = 0; i < MAX_THROTTLES; i++) {
     if (throttles[i].used && throttles[i].key == key) {
@@ -415,19 +278,12 @@ void resetAlert(const String &key) {
 void writeAlert(const String &type, const String &severity, const String &message) {
   FirebaseJson json;
   json.set("type",      type);
-  json.set("severity",  severity);   // info | warning | critical
+  json.set("severity",  severity);
   json.set("message",   message);
   json.set("timestamp", nowStamp());
   json.set("epoch",     (int)nowEpoch());
   json.set("read",      false);
 
-  // One PUT for the whole node — the previous version issued four separate
-  // REST writes per alert.
-  //
-  // The path is built into a named String first: `"/alerts/" + alertKey()` has
-  // static type StringSumHelper, and the library's path parameter is a
-  // template over a fixed set of string types. Assigning to a String sidesteps
-  // any question of whether that helper type is in the set.
   String alertPath = "/alerts/" + alertKey();
   Firebase.RTDB.setJSON(&fbdo, alertPath, &json);
   Serial.printf("[ALERT/%s] %s: %s\n", severity.c_str(), type.c_str(), message.c_str());
@@ -443,10 +299,6 @@ void pushLevelAlert(const String &throttleKey, const String &type,
   writeAlert(type, severity, message);
 }
 
-// ═══════════════════════════════════════════════════════════
-// SERVO HELPER
-// ═══════════════════════════════════════════════════════════
-
 void sweepServo(Servo &s, int fromAngle, int toAngle) {
   int step = (toAngle >= fromAngle) ? 5 : -5;
   for (int pos = fromAngle; (step > 0) ? (pos <= toAngle) : (pos >= toAngle); pos += step) {
@@ -455,10 +307,6 @@ void sweepServo(Servo &s, int fromAngle, int toAngle) {
   }
   s.write(toAngle);
 }
-
-// ═══════════════════════════════════════════════════════════
-// HIVE LOCK (RFID) — GPIO19
-// ═══════════════════════════════════════════════════════════
 
 void publishLockState() {
   Firebase.RTDB.setBool(&fbdo, "/security/locked", lockState);
@@ -478,10 +326,6 @@ void lockHive() {
   lockState = true;
   publishLockState();
 }
-
-// ═══════════════════════════════════════════════════════════
-// ENTRANCE (Hornet) — GPIO13
-// ═══════════════════════════════════════════════════════════
 
 void publishEntrance() {
   Firebase.RTDB.setString(&fbdo, "/hornet_detection/entrance_status", entranceState);
@@ -507,26 +351,20 @@ void narrowEntrance(const String &reason) {
   pushEvent("entrance_narrow", "warning", "Entrance narrowed (" + reason + ").");
 }
 
-// ═══════════════════════════════════════════════════════════
-// HONEY COLLECTION — door GPIO18 + smoke GPIO32
-// ═══════════════════════════════════════════════════════════
-
 void startSmoke() {
-  digitalWrite(RELAY_SMOKE_PIN, LOW);   // ACTIVE LOW = ON
+  digitalWrite(RELAY_SMOKE_PIN, LOW);
   smokeOffAt = deadlineAt(SMOKE_DURATION_MS);
   Firebase.RTDB.setBool(&fbdo, "/commands/smoke_pump", true);
   pushEvent("smoke", "info", "Smoke pump running for 4 s.");
 }
 
 void stopSmoke(bool announce) {
-  digitalWrite(RELAY_SMOKE_PIN, HIGH);  // OFF
+  digitalWrite(RELAY_SMOKE_PIN, HIGH);
   smokeOffAt = 0;
   Firebase.RTDB.setBool(&fbdo, "/commands/smoke_pump", false);
   if (announce) pushEvent("smoke", "info", "Smoke pump stopped.");
 }
 
-// Open the door and start the smoke burst. The door is LEFT OPEN — closing is
-// a separate manual command (collect_honey = false).
 void collectHoney() {
   Serial.println("[HONEY] Start — opening door");
   sweepServo(servoDoor, DOOR_CLOSED_ANGLE, DOOR_OPEN_ANGLE);
@@ -538,16 +376,12 @@ void collectHoney() {
 
 void stopHoneyCollection() {
   Serial.println("[HONEY] Stop — closing door");
-  stopSmoke(false);   // safety: never leave the smoke relay latched
+  stopSmoke(false);
   sweepServo(servoDoor, DOOR_OPEN_ANGLE, DOOR_CLOSED_ANGLE);
   doorOpen = false;
   Firebase.RTDB.setBool(&fbdo, "/hive_status/door_open", false);
   pushEvent("door_closed", "info", "Honey door closed.");
 }
-
-// ═══════════════════════════════════════════════════════════
-// FEEDING — pump GPIO33, volume-based, non-blocking
-// ═══════════════════════════════════════════════════════════
 
 void startFeeding(int ml) {
   unsigned long runMs = (unsigned long)ml * FEED_MS_PER_ML;
@@ -555,7 +389,7 @@ void startFeeding(int ml) {
 
   feedingMl = ml;
   feedOffAt = deadlineAt(runMs);
-  digitalWrite(RELAY_FEED_PIN, LOW);    // ACTIVE LOW = ON
+  digitalWrite(RELAY_FEED_PIN, LOW);
   Firebase.RTDB.setBool(&fbdo, "/commands/pump", true);
 
   Serial.printf("[FEED] Dispensing %d ml (%lu ms)\n", ml, runMs);
@@ -563,38 +397,26 @@ void startFeeding(int ml) {
 }
 
 void stopFeeding() {
-  digitalWrite(RELAY_FEED_PIN, HIGH);   // OFF
+  digitalWrite(RELAY_FEED_PIN, HIGH);
   feedOffAt = 0;
   Firebase.RTDB.setBool(&fbdo, "/commands/pump",  false);
-  // One-shot: clear the request so it doesn't re-trigger on the next poll.
+
   Firebase.RTDB.setInt(&fbdo,  "/commands/feed_ml", 0);
   pushEvent("feeding", "info", "Feeding finished: " + String(feedingMl) + " ml dispensed.");
   feedingMl = 0;
 }
 
-// Runs every loop: turns pumps off when their deadline passes. Keeping this
-// out of the command path means a 12 s feed no longer blocks RFID or alerts.
 void serviceActuators() {
   unsigned long now = millis();
   if (smokeOffAt != 0 && (long)(now - smokeOffAt) >= 0) stopSmoke(true);
   if (feedOffAt  != 0 && (long)(now - feedOffAt)  >= 0) stopFeeding();
 }
 
-// ═══════════════════════════════════════════════════════════
-// ULTRASONIC — FEEDING SOLUTION LEVEL
-// ═══════════════════════════════════════════════════════════
-
-// Sound travels at 331.3 + 0.606*T m/s. Ignoring temperature costs ~0.6% per
-// °C of error, which on this 3.5 cm tank is worth correcting for since we
-// already have a hive temperature from the audio board.
 float speedOfSoundCmPerUs(float tempC) {
   float t = isnan(tempC) ? 25.0 : tempC;
   return (331.3 + 0.606 * t) / 10000.0;
 }
 
-// One ping. Returns NAN when the echo never comes back — the old code let a
-// timeout fall through as distance = 0, which the level formula then turned
-// into a FULL tank. A dead sensor read as 100%.
 float pingOnce(float tempC) {
   digitalWrite(TRIG_PIN, LOW);
   delayMicroseconds(2);
@@ -607,14 +429,10 @@ float pingOnce(float tempC) {
 
   float distance = (duration * speedOfSoundCmPerUs(tempC)) / 2.0;
 
-  // HC-SR04 is only trustworthy from about 2 cm to 400 cm.
   if (distance < 2.0 || distance > 400.0) return NAN;
   return distance;
 }
 
-// Median of 5 pings. A median (not a mean) is what we want here: a single
-// spurious echo off the tank wall is discarded outright rather than dragging
-// the average.
 float readDistanceCm(float tempC) {
   const int N = 5;
   float samples[N];
@@ -623,9 +441,9 @@ float readDistanceCm(float tempC) {
   for (int i = 0; i < N; i++) {
     float d = pingOnce(tempC);
     if (!isnan(d)) samples[valid++] = d;
-    delay(35);   // let the previous burst decay before the next ping
+    delay(35);
   }
-  if (valid < 3) return NAN;   // majority of pings failed: report a fault
+  if (valid < 3) return NAN;
 
   for (int i = 1; i < valid; i++) {
     float k = samples[i];
@@ -648,16 +466,13 @@ FeedingData readFeedingLevel(float tempC) {
     return data;
   }
 
-  // Geometry: the sensor sits sensorToTopCm above the rim, the tank is
-  // containerHeightCm deep. Echo distance therefore runs from sensorToTopCm
-  // (full) to sensorToTopCm + containerHeightCm (empty).
   float waterHeight = containerHeightCm - (data.distance - sensorToTopCm);
   waterHeight = constrain(waterHeight, 0.0f, containerHeightCm);
 
   float radius = containerDiameterCm / 2.0;
   data.waterHeight = waterHeight;
   data.percentage  = constrain((waterHeight / containerHeightCm) * 100.0f, 0.0f, 100.0f);
-  data.remainingMl = 3.14159265 * radius * radius * waterHeight;  // 1 cm³ = 1 ml
+  data.remainingMl = 3.14159265 * radius * radius * waterHeight;
   data.valid       = true;
 
   lastGoodWaterCm  = data.waterHeight;
@@ -665,29 +480,19 @@ FeedingData readFeedingLevel(float tempC) {
   return data;
 }
 
-// ═══════════════════════════════════════════════════════════
-// HX711 — HIVE WEIGHT
-// ═══════════════════════════════════════════════════════════
-
-// Returns kilograms, or NAN if the cell didn't answer. Returning NAN rather
-// than 0.0 matters: 0.0 flows into the production maths as "the hive lost all
-// its weight" and fires a bogus harvest event.
 float readWeight() {
   if (!scale.wait_ready_timeout(400)) {
     Serial.println("[HX711] Not ready — holding last good weight");
     return NAN;
   }
   float w = scale.get_units(5);
-  if (isnan(w) || w < -50.0 || w > 500.0) return NAN;   // clearly bogus
+  if (isnan(w) || w < -50.0 || w > 500.0) return NAN;
   return w;
 }
 
 void applyTare() {
   if (!scale.wait_ready_timeout(1000)) {
-    // Clear the request even on failure. Leaving it set meant the 700 ms
-    // command poll re-entered here forever, each attempt blocking a second and
-    // appending a fresh /alerts node — the exact flood this version set out to
-    // remove. Throttled too, so a dead cell reports once per cooldown.
+
     Firebase.RTDB.setBool(&fbdo, "/commands/tare_scale", false);
     pushLevelAlert("tare_fault", "sensor_fault", "warning",
                    "Tare failed: load cell did not respond.");
@@ -700,28 +505,16 @@ void applyTare() {
   pushEvent("calibration", "info", "Scale tared. New zero saved.");
 }
 
-// ═══════════════════════════════════════════════════════════
-// HEALTH SCORE
-// ═══════════════════════════════════════════════════════════
-
 int calcHealthScore(float temp, float hum, float weight, const String &sound) {
   int score = 100;
   if (!isnan(temp) && (temp > 36.0 || temp < 32.0)) score -= 20;
   if (!isnan(hum)  && (hum  > 75.0 || hum  < 40.0)) score -= 15;
-  // "Unknown" means the audio board hasn't reported yet — that's a gap in our
-  // knowledge, not evidence of a sick hive, so it must not cost 30 points.
+
   if (sound != "Normal" && sound != "Unknown")      score -= 30;
   if (hornetDetected)                               score -= 20;
   if (!isnan(weight) && weight < 5.0)               score -= 15;
   return constrain(score, 0, 100);
 }
-
-// ═══════════════════════════════════════════════════════════
-// SOUND LABEL NORMALISATION
-// ═══════════════════════════════════════════════════════════
-// The Edge Impulse model emits its own class names ("Active", "Queen_Loss").
-// The app and the health score speak "Normal" / "Swarming" / "Queen Loss".
-// Translate once, here, so a model retrain only needs this table updated.
 
 String normaliseSound(const String &raw) {
   String s = raw;
@@ -736,10 +529,6 @@ String normaliseSound(const String &raw) {
   return s;
 }
 
-// ═══════════════════════════════════════════════════════════
-// PRODUCTION / HONEY ESTIMATION
-// ═══════════════════════════════════════════════════════════
-
 float estimateHoney(float weight) {
   if (isnan(weight)) return 0.0;
   float gain = weight - baselineWeight;
@@ -747,8 +536,6 @@ float estimateHoney(float weight) {
   return gain * honeyFraction;
 }
 
-// Close out a finished day into /production/history so the app can chart real
-// numbers instead of multiplying today's figure by made-up factors.
 void rollOverDay(const String &finishedDate, float finishedGain, float endWeight) {
   FirebaseJson day;
   day.set("gain",   finishedGain);
@@ -767,7 +554,6 @@ void updateProduction(float weight) {
   int    week  = isoWeek();
   int    month = monthNumber();
 
-  // First reading ever, or the date changed while we were running.
   if (todayDate.length() == 0) {
     todayDate        = today;
     todayStartWeight = weight;
@@ -790,9 +576,6 @@ void updateProduction(float weight) {
   float todayGain = isnan(todayStartWeight) ? 0.0 : (weight - todayStartWeight);
   if (todayGain < 0) todayGain = 0;
 
-  // Harvest detection: a sudden drop between two samples is honey leaving the
-  // hive, not the colony shrinking. Only counted while the door is open, so
-  // an inspection or a knock doesn't register as a harvest.
   if (!isnan(prevWeightSample)) {
     float delta = weight - prevWeightSample;
     if (delta <= -harvestDropKg && doorOpen) {
@@ -801,8 +584,7 @@ void updateProduction(float weight) {
       Firebase.RTDB.setFloat(&fbdo,  "/production/last_harvest_kg",   harvested);
       Firebase.RTDB.setString(&fbdo, "/production/last_harvest_time", nowStamp());
       Firebase.RTDB.setFloat(&fbdo,  "/production/total_harvested",   totalHarvested);
-      // The removed honey is gone from the hive, so the baseline follows it
-      // down — otherwise estimated_honey would stay high after a harvest.
+
       baselineWeight = weight;
       Firebase.RTDB.setFloat(&fbdo, "/production/baseline_weight", baselineWeight);
       pushEvent("harvest", "info",
@@ -816,7 +598,7 @@ void updateProduction(float weight) {
 
   FirebaseJson prod;
   prod.set("hive_weight",        weight);
-  prod.set("today_weight",       weight);          // kept for older app builds
+  prod.set("today_weight",       weight);
   prod.set("baseline_weight",    baselineWeight);
   prod.set("estimated_honey",    estimateHoney(weight));
   prod.set("today_production",   todayGain);
@@ -829,18 +611,8 @@ void updateProduction(float weight) {
   Firebase.RTDB.updateNode(&fbdo, "/production", &prod);
 }
 
-// ═══════════════════════════════════════════════════════════
-// FIREBASE — UPLOAD SENSOR DATA
-// ═══════════════════════════════════════════════════════════
-
 void uploadSensorData() {
-  // This function can occupy the loop for a long time: the ultrasonic burst
-  // takes ~300 ms, the load cell up to 400 ms, and each Firebase write can
-  // block for up to config.timeout.serverResponse (10 s) on a bad link. A pump
-  // deadline that falls inside that window would not be serviced until the
-  // whole upload finished, so the relay is checked between the slow steps.
-  // FEED_MAX_MS is a deadline, not a hardware limit — nothing else stops a
-  // stuck pump.
+
   FeedingData feeding = readFeedingLevel(receivedTemp);
   serviceActuators();
 
@@ -857,8 +629,6 @@ void uploadSensorData() {
 
   int health = calcHealthScore(receivedTemp, receivedHumidity, weight, receivedSound);
 
-  // Peer liveness. Reported so the app can show which node went quiet instead
-  // of silently displaying stale numbers as if they were live.
   unsigned long now = millis();
   audioOnline = (lastAudioPacket != 0) && (now - lastAudioPacket < NODE_TIMEOUT_MS);
   camOnline   = (lastCamPacket   != 0) && (now - lastCamPacket   < NODE_TIMEOUT_MS);
@@ -894,10 +664,6 @@ void uploadSensorData() {
   ai.set("node_online",   audioOnline);
   Firebase.RTDB.updateNode(&fbdo, "/ai_status", &ai);
 
-  // ── Hornet / camera panel ─────────────────────────────
-  // Keeps the app's detection card fresh even between hornet events, and
-  // rebuilds the last-detection time from the camera's reported age so a
-  // controller reboot doesn't erase it.
   FirebaseJson hornet;
   hornet.set("detected",        hornetDetected);
   hornet.set("detection_count", hornetCount);
@@ -921,7 +687,6 @@ void uploadSensorData() {
   Firebase.RTDB.updateNode(&fbdo, "/camera", &cam);
   serviceActuators();
 
-  // ── Level-triggered warnings (throttled) ──────────────
   if (!feeding.valid) {
     pushLevelAlert("water_sensor", "sensor_fault", "warning",
                    "Ultrasonic sensor not responding — feeding level unknown.");
@@ -986,13 +751,6 @@ void uploadSensorData() {
                 doorOpen ? "OPEN" : "CLOSED");
 }
 
-// ═══════════════════════════════════════════════════════════
-// FIREBASE — READ & EXECUTE COMMANDS
-// ═══════════════════════════════════════════════════════════
-
-// One GET for the whole /commands node instead of one per key. The previous
-// version issued three reads every 200 ms, which kept the radio permanently
-// busy and made each command wait behind the others' round-trips.
 void readAndExecuteCommands() {
   if (!Firebase.RTDB.getJSON(&fbdo, "/commands")) return;
 
@@ -1000,7 +758,6 @@ void readAndExecuteCommands() {
   if (cmd == nullptr) return;
   FirebaseJsonData r;
 
-  // Honey collection: true = open door + smoke, false = close door.
   if (cmd->get(r, "collect_honey")) {
     bool val = r.boolValue;
     if (val && !lastCollectHoney) {
@@ -1012,20 +769,15 @@ void readAndExecuteCommands() {
     }
   }
 
-  // Feeding: app writes a volume in ml; we run once and reset it to 0.
-  // Ignored while a feed is already in flight so a slow Firebase round-trip
-  // can't start a second overlapping pour.
   if (feedOffAt == 0 && cmd->get(r, "feed_ml")) {
     int ml = r.intValue;
     if (ml > 0) startFeeding(ml);
   }
 
-  // Entrance open / narrow.
   if (cmd->get(r, "entrance")) {
     String val = r.stringValue;
     if (val.length() > 0 && val != entranceState) {
-      // A manual command takes ownership of the gate: cancel the automatic
-      // reopen so the system does not move it back under the beekeeper.
+
       entranceNarrowedByHornet = false;
       hornetClearedAt = 0;
       if (val == "narrow") narrowEntrance("app request");
@@ -1033,12 +785,10 @@ void readAndExecuteCommands() {
     }
   }
 
-  // Re-zero the scale on request (used after the hive is set up or moved).
   if (cmd->get(r, "tare_scale") && r.boolValue) {
     applyTare();
   }
 
-  // Adopt the current weight as the "no harvestable honey" reference.
   if (cmd->get(r, "set_baseline") && r.boolValue) {
     if (!isnan(lastGoodWeight)) {
       baselineWeight = lastGoodWeight;
@@ -1049,10 +799,6 @@ void readAndExecuteCommands() {
     Firebase.RTDB.setBool(&fbdo, "/commands/set_baseline", false);
   }
 }
-
-// ═══════════════════════════════════════════════════════════
-// RFID — ANY CARD TOGGLES THE HIVE LOCK (GPIO19)
-// ═══════════════════════════════════════════════════════════
 
 void checkRFID() {
   if (!rfid.PICC_IsNewCardPresent() || !rfid.PICC_ReadCardSerial()) return;
@@ -1097,10 +843,6 @@ void checkRFID() {
   rfid.PCD_StopCrypto1();
 }
 
-// ═══════════════════════════════════════════════════════════
-// SOUND RESULT — consumed in loop(), never in the RX callback
-// ═══════════════════════════════════════════════════════════
-
 void servicePendingSound() {
   if (!pendingSoundUpdate) return;
   pendingSoundUpdate = false;
@@ -1108,7 +850,6 @@ void servicePendingSound() {
   bool fresh = pendingSoundFresh;
   pendingSoundFresh = false;
 
-  // Copy out before doing anything slow: another packet may land mid-way.
   char label[21];
   memcpy(label, pendingSoundLabel, sizeof(label));
   label[20] = '\0';
@@ -1116,8 +857,6 @@ void servicePendingSound() {
 
   String sound = normaliseSound(String(label));
 
-  // Only a fresh classification updates the verdict; the periodic environment
-  // ticks carry the same label we already logged.
   if (!fresh) {
     if (receivedSound == "Unknown") receivedSound = sound;
     return;
@@ -1149,12 +888,6 @@ void servicePendingSound() {
   }
 }
 
-// ═══════════════════════════════════════════════════════════
-// HORNET RESPONSE
-// ═══════════════════════════════════════════════════════════
-
-// Edge-triggered so we narrow once per event rather than every 30 s, and so
-// the "all clear" is reported exactly once too.
 void handleHornet() {
   if (hornetDetected == lastHornetState) return;
 
@@ -1162,7 +895,7 @@ void handleHornet() {
     Serial.println("[HORNET] Detected — narrowing entrance");
     narrowEntrance("hornet detected");
     entranceNarrowedByHornet = true;
-    hornetClearedAt = 0;   // cancel any pending reopen
+    hornetClearedAt = 0;
 
     FirebaseJson h;
     h.set("detected",             true);
@@ -1177,7 +910,7 @@ void handleHornet() {
               " in frame). Entrance narrowed automatically.");
   } else {
     Firebase.RTDB.setBool(&fbdo, "/hornet_detection/detected", false);
-    // Start the reopen countdown. 0 is the "no timer" sentinel, so nudge it.
+
     hornetClearedAt = millis();
     if (hornetClearedAt == 0) hornetClearedAt = 1;
     pushEvent("hornet_clear", "info",
@@ -1186,9 +919,6 @@ void handleHornet() {
   lastHornetState = hornetDetected;
 }
 
-// Reopen the entrance once the hornets have stayed away long enough. Only
-// undoes the system's own narrowing — a gate the beekeeper narrowed by hand
-// stays where they put it.
 void serviceEntranceReopen() {
   if (hornetClearedAt == 0 || HORNET_REOPEN_DELAY_MS == 0) return;
 
@@ -1203,10 +933,6 @@ void serviceEntranceReopen() {
   openEntrance("no hornets for 10 minutes");
 }
 
-// ═══════════════════════════════════════════════════════════
-// ESP-NOW CALLBACK  (keep it light: store values, act in loop())
-// ═══════════════════════════════════════════════════════════
-
 void handleEspNowPacket(const uint8_t *data, int len) {
   if (len < 1) return;
 
@@ -1216,8 +942,6 @@ void handleEspNowPacket(const uint8_t *data, int len) {
       SensorData in;
       memcpy(&in, data, sizeof(in));
 
-      // Scalars only — no String, no Firebase, no getLocalTime(). See the
-      // comment on pendingSoundUpdate.
       receivedTemp       = in.temperature;
       receivedHumidity   = in.humidity;
       receivedConfidence = in.confidence;
@@ -1227,7 +951,7 @@ void handleEspNowPacket(const uint8_t *data, int len) {
       pendingSoundLabel[20] = '\0';
       pendingSoundConf = in.confidence;
       if (in.freshAnalysis) pendingSoundFresh = true;
-      // Set last: loop() treats this flag as "the fields above are ready".
+
       pendingSoundUpdate = true;
       break;
     }
@@ -1248,8 +972,6 @@ void handleEspNowPacket(const uint8_t *data, int len) {
   }
 }
 
-// The callback signature changed in ESP32 Arduino core 3.x. This compiles on
-// both; ESP_ARDUINO_VERSION_MAJOR is undefined (so 0) on older cores.
 #if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
 void onDataReceived(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
   (void)info;
@@ -1262,12 +984,6 @@ void onDataReceived(const uint8_t *mac, const uint8_t *data, int len) {
 }
 #endif
 
-// ═══════════════════════════════════════════════════════════
-// CALIBRATION LOAD
-// ═══════════════════════════════════════════════════════════
-
-// Read tank geometry and scale calibration back from Firebase so they survive
-// a reboot and can be re-measured from the app without reflashing.
 void loadCalibration() {
   if (Firebase.RTDB.getFloat(&fbdo, "/calibration/scale_factor")) {
     float v = fbdo.floatData();
@@ -1294,7 +1010,7 @@ void loadCalibration() {
   }
   if (Firebase.RTDB.getFloat(&fbdo, "/production/baseline_weight")) {
     float v = fbdo.floatData();
-    if (v > 0) baselineWeight = v;   // a legacy 0 must not overwrite the 4kg default
+    if (v > 0) baselineWeight = v;
   }
   if (Firebase.RTDB.getFloat(&fbdo, "/production/total_harvested")) {
     totalHarvested = fbdo.floatData();
@@ -1321,28 +1037,20 @@ void loadCalibration() {
                 containerDiameterCm, honeyFraction, baselineWeight);
 }
 
-// ═══════════════════════════════════════════════════════════
-// SETUP
-// ═══════════════════════════════════════════════════════════
-
 void setup() {
   Serial.begin(115200);
 
-  // ── SAFE INITIAL STATE ──────────────────────────────────
-  // Pumps are ACTIVE LOW: drive the latch HIGH (=OFF) BEFORE switching the pin
-  // to OUTPUT so the relay never sees a brief LOW glitch at boot.
   digitalWrite(RELAY_FEED_PIN,  HIGH);
   digitalWrite(RELAY_SMOKE_PIN, HIGH);
   pinMode(RELAY_FEED_PIN,  OUTPUT);
   pinMode(RELAY_SMOKE_PIN, OUTPUT);
-  digitalWrite(RELAY_FEED_PIN,  HIGH); // OFF
-  digitalWrite(RELAY_SMOKE_PIN, HIGH); // OFF
+  digitalWrite(RELAY_FEED_PIN,  HIGH);
+  digitalWrite(RELAY_SMOKE_PIN, HIGH);
 
   pinMode(TRIG_PIN, OUTPUT);
   digitalWrite(TRIG_PIN, LOW);
   pinMode(ECHO_PIN, INPUT);
 
-  // Servos: attach and immediately drive to a known home position.
   servoDoor.attach(SERVO_DOOR_PIN);
   servoLock.attach(SERVO_LOCK_PIN);
   servoEntrance.attach(SERVO_ENTRANCE_PIN);
@@ -1353,20 +1061,15 @@ void setup() {
   lockState     = true;
   entranceState = "open";
 
-  // HX711 — note there is NO tare() here any more. Taring on every boot zeroed
-  // the scale with the hive already sitting on it, so the app's weight reset to
-  // 0 on every power cycle. The saved offset is restored in loadCalibration().
   scale.begin(HX711_DT, HX711_SCK);
   scale.set_scale(scaleFactor);
   Serial.println("[HX711] Scale ready");
 
-  // RFID (SPI: SCK=14, MISO=27, MOSI=25, SS=5)
   SPI.begin(14, 27, 25, 5);
   rfid.PCD_Init();
   Serial.println("[RFID] Ready");
 
-  // WiFi
-  WiFi.mode(WIFI_STA);   // STA only — no SoftAP is used, and STA is the stable mode for ESP-NOW + station
+  WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   Serial.print("[WiFi] Connecting");
   while (WiFi.status() != WL_CONNECTED) {
@@ -1375,8 +1078,7 @@ void setup() {
   }
   Serial.println("\n[WiFi] Connected: " + WiFi.localIP().toString());
   Serial.println("[ESP-NOW] MAC: " + WiFi.macAddress());
-  // Print the channel: if the other boards report a different number here,
-  // ESP-NOW between them will not work no matter what the MACs say.
+
   Serial.printf("[WiFi] Channel: %d  (camera + audio boards MUST match)\n",
                 WiFi.channel());
 
@@ -1390,7 +1092,6 @@ void setup() {
     Serial.println("[ESP-NOW] Ready");
   }
 
-  // Firebase
   config.api_key      = API_KEY;
   config.database_url = DATABASE_URL;
   config.cert.data    = nullptr;
@@ -1400,15 +1101,12 @@ void setup() {
   Firebase.reconnectWiFi(true);
   fbdo.setResponseSize(4096);
   config.timeout.serverResponse = 10 * 1000;
-  // loadCalibration() reads back saved values, so wait for the token exchange
-  // to finish first — otherwise every read fails and the hard-coded defaults
-  // silently overwrite the beekeeper's calibration.
+
   for (int i = 0; i < 100 && !Firebase.ready(); i++) delay(100);
   Serial.println("[Firebase] Connected");
 
   loadCalibration();
 
-  // Publish a clean initial state so the app reflects reality on first launch.
   FirebaseJson cmd;
   cmd.set("collect_honey", false);
   cmd.set("feed_ml",       0);
@@ -1424,8 +1122,6 @@ void setup() {
   sec.set("rfid_status", "Waiting for Card");
   Firebase.RTDB.updateNode(&fbdo, "/security", &sec);
 
-  // Tell the app where to find the camera, so the stream URL lives in one
-  // place and can be changed without rebuilding the app.
   FirebaseJson cam;
   cam.set("stream_url", CAMERA_STREAM_URL);
   cam.set("status_url", CAMERA_STATUS_URL);
@@ -1440,7 +1136,6 @@ void setup() {
   cal.set("honey_fraction",       honeyFraction);
   Firebase.RTDB.updateNode(&fbdo, "/calibration", &cal);
 
-  // Publish the baseline so estimated_honey is never blank in the app.
   Firebase.RTDB.setFloat(&fbdo, "/production/baseline_weight", baselineWeight);
 
   Firebase.RTDB.setBool(&fbdo, "/hive_status/door_open", false);
@@ -1450,13 +1145,8 @@ void setup() {
   Serial.println("[Firebase] Initial state published");
 }
 
-// ═══════════════════════════════════════════════════════════
-// LOOP
-// ═══════════════════════════════════════════════════════════
-
 void loop() {
-  // Pump deadlines are checked before the Firebase gate: a dropped connection
-  // must never leave a pump latched on.
+
   serviceActuators();
 
   if (!Firebase.ready()) {
