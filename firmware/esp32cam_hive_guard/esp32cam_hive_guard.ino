@@ -4,25 +4,8 @@
 #include "img_converters.h"
 #include <esp_now.h>
 
-// =====================================================
-// WIFI
-// =====================================================
-
-// ⚠️ ESP-NOW بيوصل بس بين بوردات على نفس قناة الواي فاي، والقناة بتيجي من
-//    الراوتر اللي البورد متصلة فيه. لازم هدول السطرين يكونوا نفسهم بالضبط
-//    بالملفات الثلاثة: هذا الملف، BeeGuard_Main_Controller.ino و
-//    BEE_HIVE_MONITOR.ino — وإلا esp_now_send بترجع ESP_OK بس الباكت بتضيع.
 const char* ssid = "MSI";
 const char* password = "123456789";
-
-// =====================================================
-// STATIC IP (FIX)
-// عدّل هاي القيم الأربعة حسب الشبكة تبعتك:
-// - local_IP: أي IP فاضي وبنفس نطاق الراوتر (مثلاً لو الراوتر 192.168.1.1
-//   خليه 192.168.1.184 أو أي رقم غير مستخدم)
-// - gateway: عادة هو IP الراوتر نفسه
-// - subnet: بمعظم الحالات 255.255.255.0
-// =====================================================
 
 IPAddress local_IP(192, 168, 137, 150);
 IPAddress gateway(192, 168, 137, 1);
@@ -30,22 +13,11 @@ IPAddress subnet(255, 255, 255, 0);
 IPAddress primaryDNS(8, 8, 8, 8);
 IPAddress secondaryDNS(8, 8, 4, 4);
 
-// =====================================================
-// ESP32 #1 (MAIN CONTROLLER) MAC ADDRESS
-// =====================================================
-
 uint8_t ESP32_MAIN_MAC[] = {
   0xEC, 0xE3, 0x34, 0x45, 0xC6, 0x94
 };
 
-// عنوان البث. منبعت للـ FF:FF:FF:FF:FF:FF بدل الاعتماد على MAC محدد: هيك حتى
-// لو الـ MAC فوق غلط، الباكت بتوصل للمتحكم — لأن استقبال ESP-NOW ما بيصفّي
-// حسب المرسل. هاد أكثر سبب شائع لـ "السيرفو ما بتتحرك رغم إنه الكشف شغال".
 uint8_t BROADCAST_MAC[] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
-
-// =====================================================
-// AI THINKER ESP32-CAM PINS
-// =====================================================
 
 #define PWDN_GPIO_NUM     32
 #define RESET_GPIO_NUM    -1
@@ -66,34 +38,12 @@ uint8_t BROADCAST_MAC[] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
 #define HREF_GPIO_NUM     23
 #define PCLK_GPIO_NUM     22
 
-// =====================================================
-// IMAGE SIZE
-// =====================================================
-
 #define IMG_W 160
 #define IMG_H 120
 #define PIXELS (IMG_W * IMG_H)
 
-// =====================================================
-// CLASSIFICATION BUFFERS
-// =====================================================
-// classBuffer values:
-//   0 = ignore (background) OR already visited during BFS
-//   1 = dark reddish-brown chitin (head / thorax / dark abdomen bands)
-//   2 = bright yellow band (face patch / abdomen rings)
-//
-// NOTE (DRAM FIX): the separate `visitedBuffer[PIXELS]` bool array was
-// removed — it cost an extra ~19.2KB of DRAM and overflowed dram0_0_seg.
-// We now reuse classBuffer itself as the "visited" marker: as soon as a
-// pixel is pushed into the BFS queue, we zero it out in classBuffer.
-// A zero therefore means "background OR already visited", which is
-// exactly what we need for both purposes.
 static uint8_t classBuffer[PIXELS];
 static uint16_t queueBuffer[PIXELS];
-
-// =====================================================
-// DBOUR BOXES
-// =====================================================
 
 #define MAX_DBOUR 6
 
@@ -107,10 +57,6 @@ struct Box {
 Box dbourBoxes[MAX_DBOUR];
 
 volatile int currentDbourCount = 0;
-
-// =====================================================
-// DBOUR FILTERS — SIZE / SHAPE
-// =====================================================
 
 const int MIN_DBOUR_PIXELS = 250;
 const int MAX_DBOUR_PIXELS = 4500;
@@ -126,50 +72,28 @@ const float MAX_ASPECT = 2.6;
 
 const float MIN_EXTENT = 0.25;
 
-// dark chitin (thorax/head) brightness window
 const int MAX_DARK_VALUE = 90;
 const int MIN_DARK_VALUE = 15;
 
-// =====================================================
-// DBOUR FILTERS — HORNET COLOR SIGNATURE
-// =====================================================
-// The oriental hornet (الدبور الأحمر) has a very distinct two-tone body:
-// dark reddish-brown chitin PLUS a bright yellow face/abdomen band.
-// A honeybee, a shadow, or dark debris will NOT have both classes together
-// in the right proportion — so requiring both is what actually separates
-// "hornet" from "any dark blob".
+const int MIN_YELLOW_VALUE = 120;   
+const int MIN_YELLOW_SAT   = 60;    
 
-const int MIN_YELLOW_VALUE = 120;   // yellow must be bright
-const int MIN_YELLOW_SAT   = 60;    // and reasonably saturated
-
-const int MIN_YELLOW_PIXELS  = 12;    // must contain some yellow "band" pixels
-const float MIN_YELLOW_RATIO = 0.03;  // yellow as % of blob — lower bound
-const float MAX_YELLOW_RATIO = 0.45;  // yellow as % of blob — upper bound (too much yellow = not hornet)
-
-// =====================================================
-// ESP-NOW DATA
-// =====================================================
-// نفس الشكل بالضبط الموجود بالمتحكم الرئيسي — لازم يضلوا متطابقين بايت ببايت.
-// msgType بيميّز نوع الباكت بدل ما نعتمد على sizeof().
+const int MIN_YELLOW_PIXELS  = 12;    
+const float MIN_YELLOW_RATIO = 0.03;  
+const float MAX_YELLOW_RATIO = 0.45;  
 
 #define MSG_SENSOR 1
 #define MSG_CAM    2
 
 typedef struct __attribute__((packed)) {
-  uint8_t  msgType;            // MSG_CAM
-  uint8_t  hornetDetected;     // 1 = في دبور بالفريم الحالي
-  uint8_t  count;              // عدد المربعات بالفريم الحالي
-  uint32_t secondsSinceLast;   // ثواني من آخر كشف مؤكد، 0xFFFFFFFF = ولا مرة
+  uint8_t  msgType;            
+  uint8_t  hornetDetected;     
+  uint8_t  count;              
+  uint32_t secondsSinceLast;   
 } CamData;
 
 bool lastHornetState = false;
 
-// =====================================================
-// LAST DETECTION TRACKING
-// =====================================================
-// وقت آخر كشف مؤكد. الكاميرا ما عندها ساعة حقيقية، فمنخزّن millis() ومنبعت
-// "كم ثانية صار" — المتحكم الرئيسي عنده NTP وبيحولها لوقت حقيقي على Firebase.
-// NEVER_DETECTED بتفرّق بين "ما صار كشف أبداً" و "الكشف صار لحظة التشغيل".
 #define NEVER_DETECTED 0xFFFFFFFFUL
 
 volatile unsigned long lastDetectionMs = 0;
@@ -177,28 +101,18 @@ volatile bool          everDetected    = false;
 volatile int           lastDetectionCount = 0;
 volatile unsigned long totalDetections = 0;
 
-// في متفرج على الستريم حالياً؟ بيحدد مين بيسحب الفريمات: معالج الستريم ولا
-// حلقة الكشف الخلفية.
 volatile bool streamClientActive = false;
 
-// نبضة دورية للمتحكم الرئيسي. بدونها، لو ما صار ولا كشف، الكاميرا ما بتبعث
-// ولا باكت والمتحكم بيحسبها "أوفلاين".
 const unsigned long HEARTBEAT_INTERVAL = 30000UL;
 unsigned long lastHeartbeat = 0;
 
-// كل قديش ندوّر الكشف لما ما يكون في متفرج
 const unsigned long BACKGROUND_SCAN_INTERVAL = 500UL;
 unsigned long lastBackgroundScan = 0;
 
-// كم ثانية مرت من آخر كشف مؤكد
 uint32_t secondsSinceLastDetection() {
   if (!everDetected) return NEVER_DETECTED;
   return (uint32_t)((millis() - lastDetectionMs) / 1000UL);
 }
-
-// =====================================================
-// WEB SERVER
-// =====================================================
 
 httpd_handle_t camera_httpd = NULL;
 httpd_handle_t stream_httpd = NULL;
@@ -215,20 +129,10 @@ static const char* STREAM_PART =
   "Content-Type: image/jpeg\r\n"
   "Content-Length: %u\r\n\r\n";
 
-// =====================================================
-// ESP-NOW SEND
-// =====================================================
-
 void sendHornetStatus(bool detected) {
 
-  // باكت محلية مش global: هاي الدالة بتنستدعى من تاسك الستريم ومن loop()،
-  // ولو الـ struct مشتركة ممكن الاستدعاءين يتداخلوا ويطلع باكت نصها من هون
-  // ونصها من هناك.
   CamData pkt;
 
-  // ملاحظة: بنقرأ الـ volatile بمتغير عادي أول. `min()` على ESP32 هي
-  // std::min، وبتفشل بالـ template deduction لما نوع أول باراميتر
-  // `volatile int` والثاني `int`.
   int frameCount = currentDbourCount;
   if (frameCount < 0)   frameCount = 0;
   if (frameCount > 255) frameCount = 255;
@@ -260,10 +164,6 @@ void sendHornetStatus(bool detected) {
     Serial.println(result);
   }
 }
-
-// =====================================================
-// HORNET PIXEL CLASSIFICATION
-// =====================================================
 
 int classifyInsectPixel(uint8_t r, uint8_t g, uint8_t b) {
 
@@ -303,12 +203,10 @@ int classifyInsectPixel(uint8_t r, uint8_t g, uint8_t b) {
       hue += 360;
   }
 
-  // ---- reject sky / foliage / blue-ish background ----
   if (saturation > 15 && hue >= 180 && hue <= 260) {
     return 0;
   }
 
-  // ---- class 2: bright yellow band (face patch / abdomen rings) ----
   if (
     maxVal >= MIN_YELLOW_VALUE &&
     saturation >= MIN_YELLOW_SAT &&
@@ -317,17 +215,12 @@ int classifyInsectPixel(uint8_t r, uint8_t g, uint8_t b) {
     return 2;
   }
 
-  // ---- class 1: dark reddish-brown chitin (head / thorax / dark abdomen bands) ----
   if (maxVal <= MAX_DARK_VALUE && maxVal >= MIN_DARK_VALUE) {
     return 1;
   }
 
   return 0;
 }
-
-// =====================================================
-// MAKE CLASSIFICATION MASK
-// =====================================================
 
 void makeDbourMask(camera_fb_t* fb) {
 
@@ -336,7 +229,6 @@ void makeDbourMask(camera_fb_t* fb) {
     uint8_t hb = fb->buf[i * 2];
     uint8_t lb = fb->buf[i * 2 + 1];
 
-    // RGB565 -> RGB888
     uint8_t r = hb & 0xF8;
 
     uint8_t g =
@@ -349,10 +241,6 @@ void makeDbourMask(camera_fb_t* fb) {
     classBuffer[i] = classifyInsectPixel(r, g, b);
   }
 }
-
-// =====================================================
-// DETECT DBOUR
-// =====================================================
 
 int detectDbour() {
 
@@ -370,7 +258,7 @@ int detectDbour() {
     int tail = 0;
 
     queueBuffer[tail++] = start;
-    classBuffer[start] = 0;  // mark visited immediately (DRAM FIX)
+    classBuffer[start] = 0;  
 
     int pixelCount = 1;
     int darkCount   = (startClass == 1) ? 1 : 0;
@@ -436,7 +324,7 @@ int detectDbour() {
 
             pixelCount++;
 
-            classBuffer[nextIndex] = 0;  // mark visited (DRAM FIX)
+            classBuffer[nextIndex] = 0;  
 
             queueBuffer[tail++] =
               nextIndex;
@@ -444,10 +332,6 @@ int detectDbour() {
         }
       }
     }
-
-    // =================================================
-    // SIZE / SHAPE FILTERS
-    // =================================================
 
     if (
       pixelCount < MIN_DBOUR_PIXELS ||
@@ -504,10 +388,6 @@ int detectDbour() {
       continue;
     }
 
-    // =================================================
-    // HORNET COLOR-SIGNATURE FILTER
-    // =================================================
-
     if (yellowCount < MIN_YELLOW_PIXELS) {
       continue;
     }
@@ -526,10 +406,6 @@ int detectDbour() {
     ) {
       continue;
     }
-
-    // =================================================
-    // DBOUR FOUND
-    // =================================================
 
     if (dbourCount < MAX_DBOUR) {
 
@@ -565,10 +441,6 @@ int detectDbour() {
 
   return dbourCount;
 }
-
-// =====================================================
-// DRAW RED RECTANGLE
-// =====================================================
 
 void setPixelRed(
   camera_fb_t* fb,
@@ -636,10 +508,6 @@ void drawRedRectangle(
     }
   }
 }
-
-// =====================================================
-// CAMERA SETUP
-// =====================================================
 
 void setupCamera() {
 
@@ -755,10 +623,6 @@ void setupCamera() {
   );
 }
 
-// =====================================================
-// WEB PAGE
-// =====================================================
-
 static esp_err_t index_handler(
   httpd_req_t* req
 ) {
@@ -870,7 +734,7 @@ const host =
 document
   .getElementById("stream")
   .src =
-  "http://" +
+  "http:
   host +
   "/";
 
@@ -1031,7 +895,6 @@ static esp_err_t status_handler(
     "application/json"
   );
 
-  // بدون هذا المتصفح بيرفض الطلب لما الصفحة تكون على origin ثاني
   httpd_resp_set_hdr(
     req,
     "Access-Control-Allow-Origin",
@@ -1044,13 +907,6 @@ static esp_err_t status_handler(
     HTTPD_RESP_USE_STRLEN
   );
 }
-
-// =====================================================
-// DETECTION CORE
-// =====================================================
-// انسحبت من stream_handler عشان تنستخدم من مكانين: من الستريم لما يكون في
-// متفرج، ومن loop() لما ما يكون. قبل هيك الكشف كان بيصير بس جوّا معالج
-// الستريم — يعني الخلية كانت محروسة بس وقت حدا فاتح التطبيق.
 
 int processDetection(camera_fb_t* fb) {
 
@@ -1068,13 +924,11 @@ int processDetection(camera_fb_t* fb) {
     lastDetectionCount = dbourCount;
     everDetected       = true;
 
-    // منعدّ الحدث مرة وحدة لما يبلش، مش كل فريم
     if (!lastHornetState) {
       totalDetections++;
     }
   }
 
-  // إرسال فقط عند تغيّر الحالة — المتحكم الرئيسي هو الي بيحرك السيرفو
   if (hornetDetected != lastHornetState) {
 
     sendHornetStatus(hornetDetected);
@@ -1084,10 +938,6 @@ int processDetection(camera_fb_t* fb) {
 
   return dbourCount;
 }
-
-// =====================================================
-// STREAM HANDLER
-// =====================================================
 
 static esp_err_t stream_handler(
   httpd_req_t* req
@@ -1112,8 +962,6 @@ static esp_err_t stream_handler(
   if (res != ESP_OK)
     return res;
 
-  // منوقّف الكشف الخلفي طول ما في متفرج، عشان ما يصير تاسكين يسحبوا فريمات
-  // من نفس الكاميرا بنفس اللحظة (fb_count = 1).
   streamClientActive = true;
 
   while (true) {
@@ -1144,16 +992,8 @@ static esp_err_t stream_handler(
       continue;
     }
 
-    // =================================================
-    // DETECT DBOUR  (+ ESP-NOW عند تغيّر الحالة)
-    // =================================================
-
     int dbourCount =
       processDetection(fb);
-
-    // =================================================
-    // DRAW BOXES
-    // =================================================
 
     int boxesToDraw =
       min(
@@ -1175,10 +1015,6 @@ static esp_err_t stream_handler(
         dbourBoxes[i].h
       );
     }
-
-    // =================================================
-    // RGB565 -> JPEG
-    // =================================================
 
     bool converted =
       frame2jpg(
@@ -1260,18 +1096,11 @@ static esp_err_t stream_handler(
     delay(30);
   }
 
-  // المتفرج قطع — الكشف الخلفي بيرجع يشتغل من loop()
   streamClientActive = false;
 
   return res;
 }
 
-// =====================================================
-// START WEB SERVERS
-// =====================================================
-
-// callback تأكيد التسليم: بيطبع على السيريال إذا الباكت وصلت للطرف الثاني.
-// FAIL هون يعني القناة غلط أو المتحكم مش شغّال — مش مشكلة كود.
 void onEspNowSent(const uint8_t *mac, esp_now_send_status_t status) {
   Serial.print("[ESP-NOW] delivery ");
   Serial.println(status == ESP_NOW_SEND_SUCCESS ? "OK" : "FAIL (no ACK)");
@@ -1279,10 +1108,6 @@ void onEspNowSent(const uint8_t *mac, esp_now_send_status_t status) {
 
 void startCameraServer() {
 
-  // ── بورت 80: الستريم المباشر على الجذر "/" ──────────────────────────
-  // معالج الستريم بيدخل حلقة لا نهائية لكل متصل، ومخدم esp_http_server خيط
-  // واحد، فأي معالج تاني على نفس المخدم بينحبس. لهيك بنخصص بورت 80 كامل
-  // للستريم — هيك http://<ip>/ بيعطي الفيديو مباشرة (هذا اللي طلبه المستخدم).
   httpd_config_t streamConfig = HTTPD_DEFAULT_CONFIG();
   streamConfig.server_port      = 80;
   streamConfig.ctrl_port        = 32080;
@@ -1300,8 +1125,6 @@ void startCameraServer() {
     Serial.println("Stream server started (port 80, root)");
   }
 
-  // ── بورت 81: ردود قصيرة (لوحة HTML + /status + /count) ───────────────
-  // ردود سريعة ما بتحبس، فبتشتغل كلها على مخدم واحد بدون ما تعطل الستريم.
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port      = 81;
   config.ctrl_port        = 32081;
@@ -1332,10 +1155,6 @@ void startCameraServer() {
   }
 }
 
-// =====================================================
-// SETUP
-// =====================================================
-
 void setup() {
 
   Serial.begin(115200);
@@ -1356,21 +1175,12 @@ void setup() {
     "======================"
   );
 
-  // ===================================================
-  // CAMERA
-  // ===================================================
-
   setupCamera();
-
-  // ===================================================
-  // WIFI
-  // ===================================================
 
   WiFi.mode(WIFI_STA);
 
   WiFi.setSleep(false);
 
-  // ---- STATIC IP (FIX) ----
   if (!WiFi.config(local_IP, gateway, subnet, primaryDNS, secondaryDNS)) {
     Serial.println("[WIFI] Static IP config FAILED");
   }
@@ -1408,10 +1218,6 @@ void setup() {
     WiFi.macAddress()
   );
 
-  // ===================================================
-  // ESP-NOW
-  // ===================================================
-
   if (
     esp_now_init() != ESP_OK
   ) {
@@ -1425,14 +1231,12 @@ void setup() {
 
   esp_now_register_send_cb(onEspNowSent);
 
-  // منسجّل الاثنين: المتحكم (unicast) وعنوان البث. الإرسال الفعلي بيروح بث
-  // عشان يوصل بغض النظر عن صحة الـ MAC. channel = 0 يعني نفس قناة الواي فاي.
   esp_now_peer_info_t peerInfo = {};
   peerInfo.channel = 0;
   peerInfo.encrypt = false;
 
   memcpy(peerInfo.peer_addr, ESP32_MAIN_MAC, 6);
-  esp_now_add_peer(&peerInfo);   // ما منوقف لو فشل — البث بيكفي
+  esp_now_add_peer(&peerInfo);   
 
   memcpy(peerInfo.peer_addr, BROADCAST_MAC, 6);
   if (esp_now_add_peer(&peerInfo) != ESP_OK) {
@@ -1452,10 +1256,6 @@ void setup() {
     "EC:E3:34:45:C6:94"
   );
 
-  // ===================================================
-  // WEB SERVER
-  // ===================================================
-
   startCameraServer();
 
   Serial.println();
@@ -1469,20 +1269,9 @@ void setup() {
   Serial.println("/");
 }
 
-// =====================================================
-// LOOP
-// =====================================================
-
 void loop() {
 
   unsigned long now = millis();
-
-  // ===================================================
-  // BACKGROUND DETECTION
-  // ===================================================
-  // الكشف كان بيصير بس جوّا معالج الستريم، يعني الخلية كانت محروسة فقط لما
-  // يكون حدا فاتح الفيديو. هلأ لما ما يكون في متفرج، منسحب فريم من هون
-  // ومنفحصه — الحراسة شغالة ٢٤ ساعة.
 
   if (
     !streamClientActive &&
@@ -1507,11 +1296,6 @@ void loop() {
       esp_camera_fb_return(fb);
     }
   }
-
-  // ===================================================
-  // HEARTBEAT
-  // ===================================================
-  // بتخلي المتحكم الرئيسي يعرف إنو الكاميرا لسا عايشة حتى لو ما في دبابير.
 
   if (now - lastHeartbeat >= HEARTBEAT_INTERVAL) {
 
