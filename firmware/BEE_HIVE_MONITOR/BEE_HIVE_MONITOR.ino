@@ -1,17 +1,5 @@
 /*
-  ============================================================================
-  BEE HIVE MONITOR - مشروع مراقبة خلية النحل
-  ============================================================================
-  المكونات:
-    - INMP441 (مايك I2S)
-    - MicroSD (تخزين التسجيلات)
-    - شاشة LCD I2C 16x2
-    - زرين (Record / Analyze)
-    - DHT11 (حرارة ورطوبة)
-    - Edge Impulse Model (ff_inferencing) لتصنيف Active / Queen_Loss
-
-  التوصيلات:
-  ----------------------------------------------------------------------------
+ 
   INMP441 (I2S Mic)
     SCK/BCLK -> GPIO 27
     WS/LRCL  -> GPIO 13
@@ -24,28 +12,26 @@
     SCK  -> GPIO 18
     MISO -> GPIO 19
     MOSI -> GPIO 26
-    VCC  -> 5V (حسب الموديول)
+    VCC  -> 5V 
     GND  -> GND
 
-  الأزرار (INPUT_PULLUP - موصولة بين GPIO و GND)
+ 
     RECORD  -> GPIO 32
     ANALYZE -> GPIO 33
 
-  شاشة LCD (I2C)
+   LCD (I2C)
     SDA -> GPIO 21
     SCL -> GPIO 25
     VCC -> حسب الشاشة
     GND -> GND
 
   DHT11
-    DATA -> GPIO 4   *** افتراضي - غيّره إذا وصلت الحساس على جي بي آيو مختلف ***
-
-  ----------------------------------------------------------------------------
-  المكتبات المطلوبة (Library Manager):
+    DATA -> GPIO 4   
+ (Library Manager):
     - LiquidCrystal I2C  (Frank de Brabander أو Marco Schwartz)
     - DHT sensor library (Adafruit)
-    - Adafruit Unified Sensor (تبعية لمكتبة DHT)
-    - ff_inferencing (مكتبتك الخاصة - Active / Queen_Loss)
+    - Adafruit Unified Sensor 
+    - ff_inferencing (   Active / Queen_Loss)
   ============================================================================
 */
 
@@ -61,24 +47,12 @@
 #include <esp_wifi.h>
 #include <ff_inferencing.h>
 
-// ============================================================================
-// 0) ESP-NOW — إرسال الحرارة/الرطوبة/نتيجة الصوت للمتحكم الرئيسي
-// ============================================================================
-// هاي البورد كانت بتقرأ DHT11 وبتشغّل الموديل بس النتيجة كانت بتوقف عالشاشة
-// وما بتوصل لحدا. هلأ بتبعت كل شي عبر ESP-NOW للمتحكم الرئيسي، وهو بيرفعها
-// على Firebase فتظهر بالتطبيق.
-//
-// ⚠️ ESP-NOW بيشتغل بس إذا كل البوردات على نفس قناة الواي فاي، والقناة بتتحدد
-//    من الراوتر اللي البورد متصلة فيه. لهيك لازم SSID و PASSWORD يكونوا نفسهم
-//    بالضبط بالملفات الثلاثة: هذا الملف، esp32cam_hive_guard.ino و
-//    BeeGuard_Main_Controller.ino.
+
 #define WIFI_SSID     "MSI"
 #define WIFI_PASSWORD "123456789"
 
-// MAC المتحكم الرئيسي (ESP32 #1)
 uint8_t ESP32_MAIN_MAC[] = { 0xEC, 0xE3, 0x34, 0x45, 0xC6, 0x94 };
 
-// نفس الشكل بالضبط الموجود بالمتحكم الرئيسي — لازم يضلوا متطابقين بايت ببايت
 #define MSG_SENSOR 1
 #define MSG_CAM    2
 
@@ -87,26 +61,21 @@ typedef struct __attribute__((packed)) {
   float   temperature;
   float   humidity;
   char    soundResult[20];
-  uint8_t confidence;      // 0..100
-  uint8_t freshAnalysis;   // 1 = نتيجة تحليل جديدة، 0 = تحديث حرارة/رطوبة فقط
+  uint8_t confidence;      
+  uint8_t freshAnalysis;   
 } SensorData;
 
-// آخر نتيجة تصنيف — بتنبعت مع كل تحديث دوري كمان
 char lastSoundLabel[20] = "Unknown";
 int  lastSoundConfidence = 0;
 
 bool espNowReady = false;
 unsigned long lastEspNowSend = 0;
-const unsigned long ESPNOW_SEND_INTERVAL = 20000UL;   // كل 20 ثانية
+const unsigned long ESPNOW_SEND_INTERVAL = 20000UL;   //   
 
-// التحليل التلقائي: بدون هذا، التطبيق بيضل يعرض نتيجة قديمة لحد ما حدا يوقف
-// جنب الخلية ويضغط الزر.
-const unsigned long AUTO_ANALYZE_INTERVAL = 15UL * 60UL * 1000UL;  // كل 15 دقيقة
+const unsigned long AUTO_ANALYZE_INTERVAL = 15UL * 60UL * 1000UL;  //   
 unsigned long lastAutoAnalyze = 0;
 
-// ============================================================================
-// 1) تعريف البنات (Pins)
-// ============================================================================
+
 
 // ---- INMP441 (I2S) ----
 #define I2S_BCLK   GPIO_NUM_27
@@ -129,8 +98,6 @@ SPIClass sdSPI(VSPI);
 #define BTN_ANALYZE  33
 #define DEBOUNCE_MS  250
 
-// ---- شاشة LCD I2C ----
-// العنوان الشائع 0x27 (لو الشاشة ما ظهرت، جرب 0x3F أو اعمل I2C scan)
 #define LCD_ADDR  0x27
 #define LCD_COLS  16
 #define LCD_ROWS  2
@@ -139,13 +106,11 @@ SPIClass sdSPI(VSPI);
 LiquidCrystal_I2C lcd(LCD_ADDR, LCD_COLS, LCD_ROWS);
 
 // ---- DHT11 ----
-#define DHT_PIN   4      // *** تأكد من هذا الرقم حسب توصيلتك الفعلية ***
+#define DHT_PIN   4     
 #define DHT_TYPE  DHT11
 DHT dht(DHT_PIN, DHT_TYPE);
 
-// ============================================================================
-// 2) إعدادات التسجيل
-// ============================================================================
+
 #define RECORD_MINUTES        1
 #define RECORD_SECONDS_LONG   (RECORD_MINUTES * 60UL)
 #define ANALYZE_SECONDS       10
@@ -158,7 +123,6 @@ const char* ANALYZE_RAW_FILE  = "/analyze_raw.wav";
 const char* ANALYZE_PROC_FILE = "/analyze_proc.wav";
 
 // ============================================================================
-// 3) فلاتر معالجة الصوت (نفس الكود الأصلي)
 // ============================================================================
 static double dc_x_prev = 0.0;
 static double dc_y_prev = 0.0;
@@ -200,7 +164,6 @@ static void resetFilters() {
 }
 
 // ============================================================================
-// 4) بفر التصنيف (Edge Impulse) - نافذة ثانية واحدة = 16000 عينة
 // ============================================================================
 static int16_t clsBuffer[EI_CLASSIFIER_RAW_SAMPLE_COUNT];
 
@@ -210,7 +173,6 @@ static int classify_signal_get_data(size_t offset, size_t length, float *out_ptr
 }
 
 // ============================================================================
-// 5) حالة النظام
 // ============================================================================
 enum SystemState { STATE_IDLE, STATE_RECORDING, STATE_ANALYZING, STATE_DONE_MSG };
 volatile SystemState sysState = STATE_IDLE;
@@ -223,17 +185,9 @@ unsigned long doneMsgSince = 0;
 float lastTemp = NAN;
 float lastHum  = NAN;
 
-// كرت SD جاهز؟ إذا لأ، منعطّل التسجيل والتحليل بس منضل نبعث الحرارة والرطوبة.
 bool sdReady = false;
 
-// ============================================================================
-// 5.5) ESP-NOW — التهيئة والإرسال
-// ============================================================================
 
-// موديل Edge Impulse بيطلع أسماء أصناف خاصة فيه ("Active" / "Queen_Loss")،
-// بينما التطبيق والمتحكم الرئيسي بيفهموا "Normal" / "Swarming" / "Queen Loss".
-// منترجم هون مرة وحدة قبل الإرسال. إذا دربت الموديل من جديد بأسماء غير، عدّل
-// هاي الدالة بس.
 void normalizeLabel(const char *raw, char *out, size_t outLen) {
   String s = String(raw);
   s.trim();
@@ -259,10 +213,9 @@ void normalizeLabel(const char *raw, char *out, size_t outLen) {
 
 void espNowInit() {
   WiFi.mode(WIFI_STA);
-  WiFi.setSleep(false);   // النوم بيخلي ESP-NOW يضيّع باكتات
+  WiFi.setSleep(false);   
 
-  // منتصل بنفس الراوتر تبع المتحكم الرئيسي عشان نضمن نفس القناة. ما منستنى
-  // للأبد — إذا الواي فاي مش موجود، التسجيل والتحليل لازم يضلوا يشتغلوا.
+ 
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   Serial.print("[WiFi] Connecting");
   unsigned long start = millis();
@@ -287,7 +240,7 @@ void espNowInit() {
 
   esp_now_peer_info_t peer = {};
   memcpy(peer.peer_addr, ESP32_MAIN_MAC, 6);
-  peer.channel = 0;        // 0 = استخدم قناة الواي فاي الحالية
+  peer.channel = 0;       
   peer.encrypt = false;
 
   if (esp_now_add_peer(&peer) != ESP_OK) {
@@ -300,20 +253,14 @@ void espNowInit() {
 }
 
 void sendSensorPacket(bool freshAnalysis) {
-  // الطابع الزمني قبل الفحص: لو ESP-NOW ما جهز، وتركنا lastEspNowSend ما
-  // بتتحدث، شرط الإرسال بـ loop() بيضل صحيح للأبد وبتصير refreshDht()
-  // تنستدعى آلاف المرات بالثانية — وقراءة DHT بتقفل المقاطعات ~٢٥ ملي ثانية
-  // وبدها ثانية بين قراءة وقراءة، فالبورد بتتعلق وكل القراءات بتفشل.
+ 
   lastEspNowSend = millis();
   if (!espNowReady) return;
 
   SensorData pkt = {};
   pkt.msgType = MSG_SENSOR;
 
-  // NAN بينبعت زي ما هو — المتحكم الرئيسي بيتعامل معها صح (بيتجاهل القراءة
-  // بدل ما يكتبها). لو بعتنا 0.0 بدلها، بيستقبلها كأنها قراءة حقيقية:
-  // "الخلية باردة ٠ درجة" و "الرطوبة ٠٪" تنبيهات كاذبة، و health_score
-  // بينقص ٣٥ نقطة، وسرعة الصوت بتتحسب غلط.
+  
   pkt.temperature   = lastTemp;
   pkt.humidity      = lastHum;
   pkt.confidence    = (uint8_t)constrain(lastSoundConfidence, 0, 100);
@@ -332,8 +279,7 @@ void sendSensorPacket(bool freshAnalysis) {
   }
 }
 
-// قراءة DHT مستقلة عن الشاشة: الشاشة بتتحدث بس بحالة IDLE، بس الحساس لازم
-// يضل يقرأ حتى وقت التسجيل عشان التطبيق ما يوقف عنده الرقم.
+
 void refreshDht() {
   float t = dht.readTemperature();
   float h = dht.readHumidity();
@@ -343,11 +289,7 @@ void refreshDht() {
   }
 }
 
-// ============================================================================
-// setup()
-// ============================================================================
-void setup() {
-  Serial.begin(115200);
+
   delay(300);
 
   pinMode(BTN_RECORD, INPUT_PULLUP);
@@ -359,16 +301,12 @@ void setup() {
   lcdShowIdle();
 
   dht.begin();
-  refreshDht();          // قراءة أولى فورية عشان أول باكت يطلع بقيم حقيقية
-
+  refreshDht();        
   i2sInit();
 
-  // SD Card على بنات مخصصة
   sdSPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
   if (!SD.begin(SD_CS, sdSPI)) {
-    // قبل هيك كان الكود بيعلق هون بـ while(1) للأبد. هلأ صار هذا اللوح مسؤول
-    // كمان عن إرسال الحرارة والرطوبة للتطبيق، فما بصير كرت SD خربان يوقّف
-    // البورد كلها — منكمل بدون تسجيل/تحليل.
+   
     sdReady = false;
     Serial.println("!!! فشل تهيئة SD Card — التسجيل والتحليل معطلين");
     lcd.clear();
@@ -380,42 +318,34 @@ void setup() {
     Serial.println("SD Card جاهزة");
   }
 
-  // ESP-NOW بعد SD: تهيئة الواي فاي بتاخد ذاكرة، ومنحب نعرف كم ضل فاضي قبل
-  // ما يشتغل Edge Impulse (الموديل + بفر التصنيف بياخدوا عشرات الكيلوبايت).
+ 
   Serial.printf("[MEM] Free heap before WiFi: %u bytes\n", ESP.getFreeHeap());
   espNowInit();
   Serial.printf("[MEM] Free heap after  WiFi: %u bytes\n", ESP.getFreeHeap());
 
-  sendSensorPacket(false);   // أول تحديث فوري للتطبيق
+  sendSensorPacket(false);   
   lastAutoAnalyze = millis();
 
   lcdShowIdle();
   Serial.println("جاهز! زر RECORD يبدأ تسجيل، زر ANALYZE يحلل عينة 10 ثواني.");
 }
 
-// ============================================================================
-// loop()
-// ============================================================================
 void loop() {
   handleButtons();
   updateSensorDisplay();
 
-  // رجوع الشاشة لحالة IDLE بعد عرض رسالة "خلص" لمدة معينة
   if (sysState == STATE_DONE_MSG && millis() - doneMsgSince > 4000) {
     sysState = STATE_IDLE;
     lcdShowIdle();
   }
 
-  // ── إرسال دوري للتطبيق ───────────────────────────────────
-  // مستقل عن حالة النظام: حتى وقت التسجيل الطويل لازم الحرارة والرطوبة
-  // يضلوا يوصلوا، لأن التسجيل بياخد دقايق والتطبيق ما بصير يوقف عالقيمة القديمة.
+ 
   if (millis() - lastEspNowSend >= ESPNOW_SEND_INTERVAL) {
     refreshDht();
     sendSensorPacket(false);
   }
 
-  // ── تحليل تلقائي كل 15 دقيقة ─────────────────────────────
-  // بس إذا النظام فاضي وكرت SD شغال — التحليل بيسجل ملف مؤقت على SD.
+  
   if (sysState == STATE_IDLE && sdReady &&
       millis() - lastAutoAnalyze >= AUTO_ANALYZE_INTERVAL) {
     lastAutoAnalyze = millis();
@@ -424,13 +354,10 @@ void loop() {
   }
 }
 
-// ============================================================================
-// الأزرار
-// ============================================================================
-void handleButtons() {
-  if (sysState != STATE_IDLE) return; // ما نستقبل ضغطات وإحنا مشغولين
 
-  // بدون كرت SD ما في مكان نكتب فيه ملف الصوت، فالزرين معطلين.
+void handleButtons() {
+  if (sysState != STATE_IDLE) return;
+
   if (!sdReady) return;
 
   if (digitalRead(BTN_RECORD) == LOW && millis() - lastBtnRecord > DEBOUNCE_MS) {
@@ -440,15 +367,12 @@ void handleButtons() {
 
   if (digitalRead(BTN_ANALYZE) == LOW && millis() - lastBtnAnalyze > DEBOUNCE_MS) {
     lastBtnAnalyze = millis();
-    // ضغطة يدوية بتأجل التحليل التلقائي الجاي، عشان ما يصير تحليلين ورا بعض
     lastAutoAnalyze = millis();
     startAnalysis();
   }
 }
 
-// ============================================================================
-// عرض الحرارة/الرطوبة (فقط بحالة IDLE، كل ثانيتين، سطر ثاني بالشاشة)
-// ============================================================================
+
 void updateSensorDisplay() {
   if (sysState != STATE_IDLE) return;
   if (millis() - lastSensorUpdate < 2000) return;
@@ -466,21 +390,17 @@ void updateSensorDisplay() {
   lcd.print(line);
 }
 
-// ============================================================================
-// شاشات LCD
-// ============================================================================
+
 void lcdShowIdle() {
   lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print("BEE HIVE MONITOR");
   lcd.setCursor(0, 1);
   lcd.print("RECORD / ANALYZE");
-  lastSensorUpdate = 0; // يفرض تحديث فوري
+  lastSensorUpdate = 0;
 }
 
-// ============================================================================
-// I2S init
-// ============================================================================
+
 void i2sInit() {
   i2s_config_t i2s_config = {
     .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
@@ -496,8 +416,7 @@ void i2sInit() {
   i2s_driver_install(I2S_PORT, &i2s_config, 0, NULL);
 
   const i2s_pin_config_t pin_config = {
-    // mck_io_num أول عنصر بالـ struct بإصدارات IDF الحديثة. لو تركناه، بياخد
-    // قيمة 0 وبتروح إشارة MCLK على GPIO 0 (وهو strapping pin) بدل ما تنعطل.
+   
     .mck_io_num = I2S_PIN_NO_CHANGE,
     .bck_io_num = I2S_BCLK,
     .ws_io_num = I2S_WS,
@@ -508,9 +427,7 @@ void i2sInit() {
   i2s_zero_dma_buffer(I2S_PORT);
 }
 
-// ============================================================================
-// WAV Header
-// ============================================================================
+
 void wavHeader(byte *header, uint32_t wavSize) {
   header[0] = 'R'; header[1] = 'I'; header[2] = 'F'; header[3] = 'F';
   uint32_t fileSize = wavSize + headerSize - 8;
@@ -534,15 +451,12 @@ void wavHeader(byte *header, uint32_t wavSize) {
   header[43] = (byte)((wavSize >> 24) & 0xFF);
 }
 
-// ============================================================================
-// 6) التسجيل الطويل (30 دقيقة) -> SD مباشرة، اسم ملف تلقائي BEE_XXX.wav
-// ============================================================================
+
 void getNextRecordingName(char *outName, size_t outLen) {
   for (int i = 1; i < 1000; i++) {
     snprintf(outName, outLen, "/BEE_%03d.wav", i);
     if (!SD.exists(outName)) return;
   }
-  // لو تعبّت كل الأسماء، رجّع اسم ثابت (نادرًا ما بيصير)
   snprintf(outName, outLen, "/BEE_OVERFLOW.wav");
 }
 
@@ -580,7 +494,6 @@ void longRecordTask(void *arg) {
   int16_t *out_buff = (int16_t *)malloc(I2S_READ_LEN / 2);
   size_t bytes_read;
 
-  // تفريغ أول قراءتين (زي الكود الأصلي)
   i2s_read(I2S_PORT, i2s_read_buff, I2S_READ_LEN, &bytes_read, portMAX_DELAY);
   i2s_read(I2S_PORT, i2s_read_buff, I2S_READ_LEN, &bytes_read, portMAX_DELAY);
 
@@ -605,7 +518,6 @@ void longRecordTask(void *arg) {
     f.write((uint8_t *)out_buff, bytesToWrite);
     written += bytesToWrite;
 
-    // تحديث الشاشة كل ثانية تقريبًا
     if (millis() - lastLcdUpdate > 1000) {
       lastLcdUpdate = millis();
       uint32_t elapsedSec   = written / (I2S_SAMPLE_RATE * BYTES_PER_SAMPLE);
@@ -643,7 +555,6 @@ void lcdShowRecordingProgress(uint32_t elapsedSec, uint32_t remainingSec) {
   snprintf(line2, sizeof(line2), "%02lu:%02lu / Rem %02lu:%02lu",
            (unsigned long)em, (unsigned long)es, (unsigned long)rm, (unsigned long)rs);
 
-  // السطر الثاني ممكن يطلع أطول من 16 خانة، منقصّه
   lcd.setCursor(0, 0); lcd.print("RECORDING       ");
   lcd.setCursor(0, 1);
   char short2[17];
@@ -652,9 +563,7 @@ void lcdShowRecordingProgress(uint32_t elapsedSec, uint32_t remainingSec) {
   lcd.print(short2);
 }
 
-// ============================================================================
-// 7) التحليل: تسجيل عينة 10 ثواني -> معالجة (DC+Bandpass+Normalize) -> تصنيف
-// ============================================================================
+
 void startAnalysis() {
   sysState = STATE_ANALYZING;
   xTaskCreate(analyzeTask, "analyzeTask", 1024 * 20, NULL, 1, NULL);
@@ -665,7 +574,6 @@ void analyzeTask(void *arg) {
   lcd.setCursor(0, 0); lcd.print("ANALYZING...");
   lcd.setCursor(0, 1); lcd.print("Recording 10s");
 
-  // ---- الخطوة أ: تسجيل 10 ثواني + DC block + Band-pass ----
   const uint32_t sampleTotal = I2S_SAMPLE_RATE * ANALYZE_SECONDS; // 160000 عينة
   const uint32_t totalBytes  = sampleTotal * BYTES_PER_SAMPLE;
 
@@ -692,9 +600,7 @@ void analyzeTask(void *arg) {
   int16_t *out_buff = (int16_t *)malloc(I2S_READ_LEN / 2);
   size_t bytes_read;
 
-  // ٢٤ كيلوبايت متصلة — بعد ما الواي فاي وموديل Edge Impulse أخدوا حصتهم من
-  // الذاكرة، هاد الطلب ممكن يفشل فعلاً. بدون هذا الفحص بنكتب على مؤشر NULL
-  // والبورد بتعمل panic.
+ 
   if (!i2s_read_buff || !out_buff) {
     Serial.println("!!! فشل حجز الذاكرة للتحليل");
     free(i2s_read_buff);
@@ -736,7 +642,6 @@ void analyzeTask(void *arg) {
   free(i2s_read_buff);
   free(out_buff);
 
-  // ---- الخطوة ب: التطبيع (Normalization) ----
   lcd.setCursor(0, 1); lcd.print("Processing...   ");
 
   double rms = (samplesDone > 0) ? sqrt(sumSquares / (double)samplesDone) : 0.0;
@@ -755,9 +660,7 @@ void analyzeTask(void *arg) {
   File outFile = SD.open(ANALYZE_PROC_FILE, FILE_WRITE);
   if (!inFile || !outFile) {
     Serial.println("!!! فشل فتح ملفات التطبيع");
-    // analysisFail بتنتهي بـ vTaskDelete، يعني الـ destructors ما بتنعمل أبداً
-    // وأي ملف فتح بيضل مفتوح. مع التحليل التلقائي كل ١٥ دقيقة، هاد التسريب
-    // بيتراكم لحد ما تخلص الـ file descriptors.
+    
     inFile.close();
     outFile.close();
     analysisFail("SD READ ERR");
@@ -784,7 +687,6 @@ void analyzeTask(void *arg) {
   inFile.close();
   outFile.close();
 
-  // ---- الخطوة ج: التصنيف على كل نافذة ثانية (10 نوافذ) ----
   lcd.setCursor(0, 1); lcd.print("Classifying...  ");
 
   File pf = SD.open(ANALYZE_PROC_FILE, FILE_READ);
@@ -822,7 +724,6 @@ void analyzeTask(void *arg) {
   }
   pf.close();
 
-  // ---- الخطوة د: عرض النتيجة على LCD ----
   if (windowCount == 0) {
     analysisFail("NO DATA");
     return;
@@ -843,16 +744,11 @@ void analyzeTask(void *arg) {
 
   Serial.printf("النتيجة النهائية: %s = %d%%\n", bestLabel, bestPercent);
 
-  // ── إرسال النتيجة للمتحكم الرئيسي -> Firebase -> التطبيق ──
-  // بنترجم اسم الصنف لمفردات التطبيق قبل الإرسال، ومنحدّث الحرارة والرطوبة
-  // بنفس الباكت عشان يوصلوا مع بعض.
+ 
   normalizeLabel(bestLabel, lastSoundLabel, sizeof(lastSoundLabel));
   lastSoundConfidence = bestPercent;
-  // ما منقرأ DHT من هون: هاي الدالة بتشتغل بتاسك منفصل، ومكتبة DHT مش
-  // reentrant (بتكتب بـ buffer مشترك والمقاطعات مقفولة). لو قرأنا هون
-  // بالتوازي مع loop() القراءتين بيخربوا بعض. آخر قيمة من loop() بتكفي —
-  // عمرها ٢٠ ثانية بأسوأ حالة.
-  sendSensorPacket(true);   // fresh = 1 -> المتحكم بيسجلها بـ ai_history
+ 
+  sendSensorPacket(true);   
 
   lcd.clear();
   lcd.setCursor(0, 0); lcd.print("ANALYSIS RESULT");
