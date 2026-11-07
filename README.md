@@ -1,21 +1,58 @@
-<<<<<<< HEAD
-# beeguard
+# 🐝 BeeGuard – Smart Beehive Monitoring System
 
-A new Flutter project.
+**Graduation project – Computer Engineering, An-Najah National University**
 
-## Getting Started
+BeeGuard is an IoT + AI system that watches over beehives: ESP32 boards inside and around the hive measure temperature, humidity and sound, an ESP32-CAM detects hornets with an on-device ML model, and a Flutter app shows everything live and sends alerts to the beekeeper.
 
-This project is a starting point for a Flutter application.
+<p align="center">
+  <img src="docs/images/app-dashboard.jpg" width="200" alt="Dashboard">
+  <img src="docs/images/app-monitoring.jpg" width="200" alt="Live monitoring">
+  <img src="docs/images/app-hornet.jpg" width="200" alt="Hornet detection">
+  <img src="docs/images/app-alerts.jpg" width="200" alt="Alerts">
+</p>
 
-A few resources to get you started if this is your first Flutter project:
+## How it works
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+```
+ ┌──────────────────┐   ESP-NOW   ┌────────────────────────┐   Firebase   ┌──────────────┐
+ │ Hive monitor      │ ──────────► │ Main controller (ESP32) │ ───────────► │ Flutter app  │
+ │ DHT11 + INMP441   │             │ fans · feeding · alarms │  Realtime DB │ (Android/iOS)│
+ └──────────────────┘             └────────────────────────┘              └──────────────┘
+ ┌──────────────────┐   ESP-NOW          ▲
+ │ ESP32-CAM         │ ──────────────────┘
+ │ hornet detection  │  (Edge Impulse / TensorFlow Lite model)
+ └──────────────────┘
+```
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
-=======
-# beeguard
->>>>>>> e5dc9b5110f0cf2f135079b9dd24e5c809757dc5
+## Features
+
+- **Live monitoring** – temperature, humidity and hive sound in real time
+- **Hornet detection** – on-device image classification on the ESP32-CAM
+- **Hive control** – fans, feeding and security from the app
+- **Alerts & notifications** – abnormal readings or detected threats
+- **Statistics & weather** – history charts and local weather for the apiary
+
+## Repository layout
+
+| Path | What's inside |
+|------|---------------|
+| `lib/` | Flutter app – 15 screens (dashboard, live monitoring, hornet detection, control, statistics, weather …) |
+| `firmware/BeeGuard_Main_Controller` | Main ESP32 controller (ESP-NOW hub + Firebase uplink) |
+| `firmware/BEE_HIVE_MONITOR` | In-hive sensor board (DHT11 + INMP441 microphone) |
+| `firmware/esp32cam_hive_guard` | ESP32-CAM with the hornet classifier |
+| `ei-bee-classifier-*` | Trained Edge Impulse / TensorFlow Lite models |
+| `docs/` | Project website and app screenshots |
+| `SETUP_V5.md` | Setup & calibration guide (Arabic) |
+
+## Tech stack
+
+Flutter · Dart · Firebase Realtime Database · ESP32 / ESP32-CAM (Arduino C++) · ESP-NOW · Edge Impulse · TensorFlow Lite
+
+## Run the app
+
+```bash
+flutter pub get
+flutter run
+```
+
+Flash the three sketches in `firmware/` with the Arduino IDE (ESP32 board package). All boards must be on the same Wi-Fi channel – see `SETUP_V5.md`.
